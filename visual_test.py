@@ -7,8 +7,8 @@ import skimage, skimage.measure
 import pyvista as pv
 import json
 import os.path
-from itertools import compress
 import matplotlib.pyplot as plt
+import pandas as pd
 
 
 parser = argparse.ArgumentParser()
@@ -47,7 +47,8 @@ is_in_brain = [brainmask_data[tuple(np.array(p.centroid).astype(int))] > 0 for p
 
 # cluster contacts by electrode
 print('Clustering electrodes...')
-brain_center = nibabel.affines.apply_affine(np.linalg.inv(ct_nifti.affine), (0, 0, 0))
+# brain_center = nibabel.affines.apply_affine(np.linalg.inv(ct_nifti.affine), (0, 0, 0))
+brain_center = np.array(ct_nifti.shape) / 2
 electrodes_remaining = [p.centroid for p, i in zip(ct_elecs, is_in_brain) if i]
 
 def dist_line(lp1, lp2, p):
@@ -93,8 +94,19 @@ while electrodes_remaining:
     electrode_groups.append(current_electrodes)
         
 
-
 # save electrode locations
+loctable = pd.DataFrame(np.vstack([np.vstack([(igroup,) + p for p in cgroup]) for igroup, cgroup in enumerate(electrode_groups)]), columns=['ename', 'x', 'y', 'z'])
+loctable['distance'] = loctable.apply(lambda r: np.linalg.norm(np.subtract(r[['x', 'y', 'z']].values, brain_center)), axis=1)
+loctable.sort_values(['ename', 'distance'], inplace=True)
+
+# number by ename
+loctable['number'] = loctable.groupby('ename').cumcount() + 1
+loctable['ename'] = loctable.apply(lambda r: chr(65+r['ename'].astype(int)) + '-{:.0f}'.format(r['number']), axis=1)
+loctable = loctable.loc[:,['ename', 'x', 'y', 'z']]
+
+# convert to mm
+loctable[['x', 'y', 'z']] = loctable.apply(lambda r: pd.Series(nibabel.affines.apply_affine(ct_nifti.affine, r[['x', 'y', 'z']].values)), axis=1)
+loctable.to_csv(os.path.join(args.coreg_folder, 'ct_electrodes.csv'), index=False)
 
 
 # clip CT data for plotting
@@ -106,12 +118,19 @@ tab20 = plt.get_cmap('tab20')
 print('Plotting...')
 plotter = pv.Plotter()
 plotter.add_volume(ct_data, name='ct_data', opacity=opacity_transfer_fn, cmap='bone')
-#plotter.add_points(np.vstack([p.centroid for p in compress(ct_elecs, is_in_brain)]), name='ct_elecs', color='red', point_size=7, opacity=0.8, render_points_as_spheres=True)
-#plotter.add_points(np.vstack([p.centroid for p, i in zip(ct_elecs, is_in_brain) if not i]), name='ct_outsidebrain', color='blue', point_size=7, opacity=0.2, render_points_as_spheres=True)
 
 for i, eg in enumerate(electrode_groups):
-    plotter.add_points(np.vstack(eg), name='ct_electrode_{}'.format(i), color=tab20(i), point_size=7, opacity=0.8, render_points_as_spheres=True)
+    plotter.add_points(np.vstack(eg), name=chr(65+i), color=tab20(i), point_size=7, opacity=0.8, render_points_as_spheres=True)
+    plotter.add_point_labels(eg[0], chr(65+i), text_color=tab20(i), font_size=15, point_size=1, render=False)
 
 plotter.enable_terrain_style()
-plotter.show()
+plotter.remove_scalar_bar()
 
+# orbit the thing
+plotter.camera.zoom(3)
+path = plotter.generate_orbital_path(n_points=90, viewup=[0, 0, 60])
+plotter.open_movie(os.path.join(args.coreg_folder, 'ct_electrodes.mp4'))
+plotter.orbit_on_path(path, write_frames=True)
+
+
+# plotter.close()
