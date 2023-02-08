@@ -174,12 +174,72 @@ loctable[['ename', 'x', 'y', 'z']].to_csv(os.path.join(args.coreg_folder,
                                                        'electrodes_CT.csv'),
                                           index=False)
 
+
+
+# warp coordinates into MNI space and plot on template brain
+print('Warping coordinates to MNI space...')
+loctable[['x', 'y', 'z']].to_csv(os.path.join(args.coreg_folder,
+                                              'temp_electrodes_CT.txt'),
+                                 index=False,
+                                 header=False,
+                                 sep='\t')
+os.system(
+    'img2imgcoord -src "{}" -dest "{}" -premat "{}" -mm -warp "{}" "{}" > {}'.
+    format(
+        coreg_meta['src_ct'],
+        '/usr/local/fsl/data/standard/MNI152_T1_1mm.nii.gz',
+        os.path.join(args.coreg_folder, 'transform_CTtoMRI_affine.mat'),
+        os.path.join(args.coreg_folder,
+                     'transform_MRItoTemplate_fnirt.nii.gz'),
+        os.path.join(args.coreg_folder, 'temp_electrodes_CT.txt'),
+        os.path.join(args.coreg_folder, 'temp_electrodes_MNI.txt'),
+    ))
+
+# read in MNI coordinates
+loctable_mni = np.loadtxt(os.path.join(args.coreg_folder,
+                                       'temp_electrodes_MNI.txt'),
+                          skiprows=1)
+loctable_mni = pd.DataFrame(loctable_mni, columns=['x', 'y', 'z'])
+loctable_mni['ename'] = loctable['ename']
+loctable_mni['enumber'] = loctable['enumber']
+loctable_mni[['ename', 'x', 'y',
+              'z']].to_csv(os.path.join(args.coreg_folder,
+                                        'electrodes_MNI.csv'),
+                           index=False)
+
+# write out electrode locations in MNI space to nifti file
+print('Writing electrode locations into a NIFTI file in MNI space...')
+template_nifti = nibabel.load(
+    '/usr/local/fsl/data/standard/MNI152_T1_1mm_brain.nii.gz')
+electrode_nifti = np.zeros(template_nifti.shape)
+
+# write coordinates to nifti
+n_side = 1
+mm_to_vox = np.linalg.inv(template_nifti.affine)
+for i, row in loctable_mni.iterrows():
+    eg = row['enumber']
+
+    # convert to voxel space
+    x, y, z = nibabel.affines.apply_affine(mm_to_vox, row[['x', 'y', 'z']].values).astype(int)
+
+    electrode_nifti[x-n_side:x+n_side+1, y-n_side:y+n_side+1, z-n_side:z+n_side+1] = eg + 1
+
+# save nifti
+nibabel.save(nibabel.Nifti1Image(electrode_nifti, template_nifti.affine, template_nifti.header),
+                os.path.join(args.coreg_folder, 'electrodes_marked_in_MNI.nii.gz'))
+
+# clean up temp files to reduce confusion
+os.remove(os.path.join(args.coreg_folder, 'temp_electrodes_CT.txt'))
+os.remove(os.path.join(args.coreg_folder, 'temp_electrodes_MNI.txt'))
+
+
+######## PLOTTING ########
+print('Plotting on CT...')
+
 # clip CT data for plotting
 ct_data = np.clip(ct_data, 0, args.threshold)
 tab20 = plt.get_cmap('tab20')
 
-# plot to check results
-print('Plotting...')
 plotter = pv.Plotter(off_screen=True)
 plotter.add_volume(
     ct_data,
@@ -217,43 +277,9 @@ plotter.orbit_on_path(path, write_frames=True)
 
 plotter.close()
 
-# warp coordinates into MNI space and plot on template brain
-print('Warping coordinates to MNI space...')
-loctable[['x', 'y', 'z']].to_csv(os.path.join(args.coreg_folder,
-                                              'temp_electrodes_CT.txt'),
-                                 index=False,
-                                 header=False,
-                                 sep='\t')
-os.system(
-    'img2imgcoord -src "{}" -dest "{}" -premat "{}" -mm -warp "{}" "{}" > {}'.
-    format(
-        coreg_meta['src_ct'],
-        '/usr/local/fsl/data/standard/MNI152_T1_1mm.nii.gz',
-        os.path.join(args.coreg_folder, 'transform_CTtoMRI_affine.mat'),
-        os.path.join(args.coreg_folder,
-                     'transform_MRItoTemplate_fnirt.nii.gz'),
-        os.path.join(args.coreg_folder, 'temp_electrodes_CT.txt'),
-        os.path.join(args.coreg_folder, 'temp_electrodes_MNI.txt'),
-    ))
-
-# read in MNI coordinates
-loctable_mni = np.loadtxt(os.path.join(args.coreg_folder,
-                                       'temp_electrodes_MNI.txt'),
-                          skiprows=1)
-loctable_mni = pd.DataFrame(loctable_mni, columns=['x', 'y', 'z'])
-loctable_mni['ename'] = loctable['ename']
-loctable_mni['enumber'] = loctable['enumber']
-loctable_mni[['ename', 'x', 'y',
-              'z']].to_csv(os.path.join(args.coreg_folder,
-                                        'electrodes_MNI.csv'),
-                           index=False)
-
-# clean up temp files to reduce confusion
-os.remove(os.path.join(args.coreg_folder, 'temp_electrodes_CT.txt'))
-os.remove(os.path.join(args.coreg_folder, 'temp_electrodes_MNI.txt'))
 
 # plot on template brain
-print('Plotting on template brain...')
+print('Plotting on template...')
 template_nifti = nibabel.load(
     '/usr/local/fsl/data/standard/MNI152_T1_1mm_brain.nii.gz')
 template_data = template_nifti.get_fdata()
@@ -298,23 +324,5 @@ plotter.open_movie(os.path.join(args.coreg_folder, 'vis_electrodes_MNI.mp4'))
 plotter.orbit_on_path(path, write_frames=True)
 plotter.close()
 
-
-# write out electrode locations in MNI space to nifti file
-electrode_nifti = np.zeros(template_data.shape)
-
-# write coordinates to nifti
-n_side = 1
-mm_to_vox = np.linalg.inv(template_nifti.affine)
-for i, row in loctable.iterrows():
-    eg = ord(row['enumber']) - 65
-
-    # convert to voxel space
-    x, y, z = nibabel.affines.apply_affine(mm_to_vox, row[['x', 'y', 'z']].values).astype(int)
-
-    electrode_nifti[x-n_side:x+n_side+1, y-n_side:y+n_side+1, z-n_side:z+n_side+1] = eg + 1
-
-# save nifti
-nibabel.save(nibabel.Nifti1Image(electrode_nifti, template_nifti.affine, template_nifti.header),
-                os.path.join(args.coreg_folder, 'electrodes_marked_in_MNI.nii.gz'))
 
 print('All done!')
