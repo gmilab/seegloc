@@ -20,7 +20,7 @@ FSLDIR=/usr/local/fsl
 # linear transform CT to MRI
 # - the brain is probably the same shape
 # - we don't have enough soft tissue contrast to do non-linear registration
-$FSLDIR/bin/flirt -in "$1" -ref "$2" -out "$3/CT_inMRIspace.nii.gz" -omat "$3/transform_CTtoMRI_affine.mat" -bins 256 -cost mutualinfo -searchrx -90 90 -searchry -90 90 -searchrz -90 90 -dof 12
+$FSLDIR/bin/flirt -in "$1" -ref "$2" -out "$3/CT_inMRIspace.nii.gz" -omat "$3/transform_CTtoMRI_affine.mat" -bins 256 -cost mutualinfo -searchrx -75 75 -searchry -75 75 -searchrz -75 75 -dof 12
 
 # BET the subject MRI for template registration
 $FSLDIR/bin/bet "$2" "$3/MRI_betted.nii.gz"
@@ -41,6 +41,9 @@ $FSLDIR/bin/convert_xfm -omat "$3/transform_MRItoCT_affine.mat" -inverse "$3/tra
 # compound affines
 $FSLDIR/bin/convert_xfm -omat "$3/transform_TemplatetoCT_affine.mat" -concat "$3/transform_MRItoCT_affine.mat" "$3/transform_TemplatetoMRI_affine.mat"
 $FSLDIR/bin/convert_xfm -omat "$3/transform_CTtoTemplate_affine.mat" -concat "$3/transform_MRItoTemplate_affine.mat" "$3/transform_CTtoMRI_affine.mat"
+
+# linearly transform brain mask to CT space
+$FSLDIR/bin/flirt -in "$FSLDIR/data/standard/MNI152_T1_1mm_brain_mask.nii.gz" -ref "$1" -out "$3/brainmask_inCT.nii.gz" -init "$3/transform_TemplatetoCT_affine.mat" -applyxfm
 
 # render sanity check images
 # - CT overlaid on the template

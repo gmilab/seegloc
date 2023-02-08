@@ -2,7 +2,6 @@
 import numpy as np
 import nibabel
 import argparse
-import sys
 import skimage, skimage.measure
 import pyvista as pv
 import json
@@ -10,7 +9,9 @@ import os.path
 import matplotlib.pyplot as plt
 import pandas as pd
 
-parser = argparse.ArgumentParser()
+parser = argparse.ArgumentParser(
+    'Automatically identify electrodes from a post-insertion CT image, cluster them into electrodes, and convert to MNI coordinates. Must be executed using vglrun.'
+)
 parser.add_argument(
     'coreg_folder',
     help='Path to coregistration folder with output from coregister_ctmri.sh',
@@ -19,11 +20,15 @@ parser.add_argument('--threshold',
                     help='CT value threshold for electrode detection',
                     type=float,
                     default=2500)
-if 'ipykernel' in sys.argv[
-        0]:  # running in ipython terminal. use test parameters.
-    args = parser.parse_args(['/d/gmi/r1/CLAS/038/coreg'])
-else:
-    args = parser.parse_args()
+parser.add_argument(
+    '--electrode_vol_thresh',
+    help=
+    'Minimum and maximum acceptable contiguous volume for an electrode (mm^3)',
+    type=int,
+    nargs=2,
+    default=[1.25, 10.0])
+
+args = parser.parse_args()
 
 with open(args.coreg_folder + '/coregister_meta.json', 'r') as f:
     coreg_meta = json.load(f)
@@ -38,8 +43,13 @@ print('Detecting electrodes...')
 ct_label = skimage.measure.label(ct_data > args.threshold)
 ct_props = skimage.measure.regionprops(ct_label)
 
-# filter list of putative electrodes
-ct_elecs = [p for p in ct_props if p.area > 5 and p.area < 40]
+# filter list of putative electrodes by size
+voxel_volume = np.abs(np.prod(np.diag(ct_nifti.affine)[:3]))
+ct_elecs = [
+    p for p in ct_props
+    if p.area > (args.electrode_vol_thresh[0] / voxel_volume) and p.area <
+    (args.electrode_vol_thresh[1] / voxel_volume)
+]
 
 # load brain mask
 brainmask_nifti = nibabel.load(
@@ -66,7 +76,17 @@ def dist_line(lp1, lp2, p):
         lp1, p))) / np.linalg.norm(np.subtract(lp2, lp1))
 
 
+def dist_real(p1, p2):
+    ''' distance in mm space '''
+    return np.linalg.norm(
+        np.subtract(
+            nibabel.affines.apply_affine(ct_nifti.affine, p1),
+            nibabel.affines.apply_affine(ct_nifti.affine, p2),
+        ))
+
+
 electrode_groups = []
+electrode_groups_dist = []
 while electrodes_remaining:
     # find the furthest electrode from brain center
     dists = [np.linalg.norm(p - brain_center) for p in electrodes_remaining]
@@ -77,16 +97,29 @@ while electrodes_remaining:
     # compute number of electrodes on the line, if we draw a line between this electrode and every other electrode remaining
     n_contacts = np.zeros(len(electrodes_remaining))
     contacts_in_line = []
+    distance_from_tip = []
     for ilp2, lp2 in enumerate(electrodes_remaining):
         dists = [
             dist_line(furthest_electrode, lp2, p) for p in electrodes_remaining
         ]
         ccontacts = [
             (i, p) for i, (p, d) in enumerate(zip(electrodes_remaining, dists))
-            if d < 3
+            if d < 2
         ]
         n_contacts[ilp2] = len(ccontacts)
         contacts_in_line.append(ccontacts)
+
+        # compute distance from furthest electrode
+        distance_from_tip.append(
+            [dist_real(x[1], furthest_electrode) for x in ccontacts])
+
+        # if spacing is too large, or too inconsistent, set n_contacts to 0
+        if len(ccontacts) > 2:
+            if np.ptp(np.diff([0] + np.sort(distance_from_tip[-1]))) > 5:
+                n_contacts[ilp2] = 0
+
+            if np.max(distance_from_tip[-1]) > 100:
+                n_contacts[ilp2] = 0
 
     # find the electrode with maximum number of contacts
     # if multiple, choose closest point to brain center
@@ -113,6 +146,7 @@ while electrodes_remaining:
 
     # add to electrode groups
     electrode_groups.append(current_electrodes)
+    electrode_groups_dist.append([0] + distance_from_tip[end_electrode_idx])
 
 # save electrode locations
 loctable = pd.DataFrame(np.vstack([
@@ -120,47 +154,49 @@ loctable = pd.DataFrame(np.vstack([
     for igroup, cgroup in enumerate(electrode_groups)
 ]),
                         columns=['enumber', 'x', 'y', 'z'])
-loctable['distance'] = loctable.apply(lambda r: np.linalg.norm(
-    np.subtract(r[['x', 'y', 'z']].values, brain_center)),
-                                      axis=1)
-loctable.sort_values(['enumber', 'distance'], inplace=True)
+loctable['distance'] = np.concatenate(electrode_groups_dist)
+loctable.sort_values(['enumber', 'distance'],
+                     ascending=[True, False],
+                     inplace=True)
+loctable.reset_index(drop=True, inplace=True)
 
 # number by ename
 loctable['number'] = loctable.groupby('enumber').cumcount() + 1
-loctable['ename'] = loctable.apply(
-    lambda r: chr(65 + r['enumber'].astype(int)) + '-{:.0f}'.format(r['number']),
-    axis=1)
+loctable['ename'] = loctable.apply(lambda r: chr(65 + r['enumber'].astype(int))
+                                   + '-{:02.0f}'.format(r['number']),
+                                   axis=1)
 
 # convert to mm
 loctable[['x', 'y', 'z']] = loctable.apply(lambda r: pd.Series(
     nibabel.affines.apply_affine(ct_nifti.affine, r[['x', 'y', 'z']].values)),
                                            axis=1)
-loctable.to_csv(os.path.join(args.coreg_folder, 'ct_electrodes.csv'),
-                index=False)
+loctable[['ename', 'x', 'y', 'z']].to_csv(os.path.join(args.coreg_folder,
+                                                       'electrodes_CT.csv'),
+                                          index=False)
 
 # clip CT data for plotting
 ct_data = np.clip(ct_data, 0, args.threshold)
-opacity_transfer_fn = np.concatenate((np.zeros(128), np.linspace(0, 0.95,
-                                                                 128)))
 tab20 = plt.get_cmap('tab20')
 
 # plot to check results
 print('Plotting...')
-plotter = pv.Plotter()
-plotter.add_volume(ct_data,
-                   name='ct_data',
-                   opacity=opacity_transfer_fn,
-                   cmap='bone')
+plotter = pv.Plotter(off_screen=True)
+plotter.add_volume(
+    ct_data,
+    name='ct_data',
+    opacity=[0.0, 0.3, 0.07],
+    cmap='bone',
+    clim=[1000, args.threshold],
+)
 
 for i, eg in enumerate(electrode_groups):
     plotter.add_points(np.vstack(eg),
                        name=chr(65 + i),
                        color=tab20(i),
-                       point_size=7,
+                       point_size=10,
                        opacity=0.8,
                        render_points_as_spheres=True)
-    plotter.add_point_labels(eg[0],
-                             chr(65 + i),
+    plotter.add_point_labels((eg[0]), [chr(65 + i)],
                              text_color=tab20(i),
                              font_size=15,
                              point_size=1,
@@ -168,11 +204,15 @@ for i, eg in enumerate(electrode_groups):
 
 plotter.enable_terrain_style()
 plotter.remove_scalar_bar()
+plotter.camera.zoom(3)
+plotter.show(auto_close=False)
+#plotter.camera.parallel_scale = 50
+plotter.export_html(os.path.join(args.coreg_folder, 'vis_electrodes_CT.html'),
+                    backend='panel')
 
 # orbit the thing
-plotter.camera.zoom(3)
-path = plotter.generate_orbital_path(n_points=90, viewup=[0, 0, 60])
-plotter.open_movie(os.path.join(args.coreg_folder, 'ct_electrodes.mp4'))
+path = plotter.generate_orbital_path(n_points=90, shift=3 * ct_nifti.shape[2])
+plotter.open_movie(os.path.join(args.coreg_folder, 'vis_electrodes_CT.mp4'))
 plotter.orbit_on_path(path, write_frames=True)
 
 plotter.close()
@@ -180,7 +220,7 @@ plotter.close()
 # warp coordinates into MNI space and plot on template brain
 print('Warping coordinates to MNI space...')
 loctable[['x', 'y', 'z']].to_csv(os.path.join(args.coreg_folder,
-                                              'ct_electrodes.txt'),
+                                              'temp_electrodes_CT.txt'),
                                  index=False,
                                  header=False,
                                  sep='\t')
@@ -190,27 +230,41 @@ os.system(
         coreg_meta['src_ct'],
         '/usr/local/fsl/data/standard/MNI152_T1_1mm.nii.gz',
         os.path.join(args.coreg_folder, 'transform_CTtoMRI_affine.mat'),
-        os.path.join(args.coreg_folder, 'transform_MRItoTemplate_fnirt.nii.gz'),
-        os.path.join(args.coreg_folder, 'ct_electrodes.txt'),
-        os.path.join(args.coreg_folder, 'ct_electrodes_mni.txt'),
+        os.path.join(args.coreg_folder,
+                     'transform_MRItoTemplate_fnirt.nii.gz'),
+        os.path.join(args.coreg_folder, 'temp_electrodes_CT.txt'),
+        os.path.join(args.coreg_folder, 'temp_electrodes_MNI.txt'),
     ))
 
 # read in MNI coordinates
-loctable_mni = np.loadtxt(os.path.join(args.coreg_folder, 'ct_electrodes_mni.txt'), skiprows=1)
+loctable_mni = np.loadtxt(os.path.join(args.coreg_folder,
+                                       'temp_electrodes_MNI.txt'),
+                          skiprows=1)
 loctable_mni = pd.DataFrame(loctable_mni, columns=['x', 'y', 'z'])
 loctable_mni['ename'] = loctable['ename']
 loctable_mni['enumber'] = loctable['enumber']
+loctable_mni[['ename', 'x', 'y',
+              'z']].to_csv(os.path.join(args.coreg_folder,
+                                        'electrodes_MNI.csv'),
+                           index=False)
+
+# clean up temp files to reduce confusion
+os.remove(os.path.join(args.coreg_folder, 'temp_electrodes_CT.txt'))
+os.remove(os.path.join(args.coreg_folder, 'temp_electrodes_MNI.txt'))
 
 # plot on template brain
 print('Plotting on template brain...')
-plotter = pv.Plotter()
-template_nifti = nibabel.load('/usr/local/fsl/data/standard/MNI152_T1_1mm_brain.nii.gz')
+template_nifti = nibabel.load(
+    '/usr/local/fsl/data/standard/MNI152_T1_1mm_brain.nii.gz')
 template_data = template_nifti.get_fdata()
-plotter = pv.Plotter()
-plotter.add_volume(template_data,
-                   name='template',
-                   opacity=opacity_transfer_fn,
-                   cmap='bone')
+plotter = pv.Plotter(off_screen=True)
+plotter.add_volume(
+    template_data,
+    name='template',
+    opacity=[0, 0.02, 0.01],
+    cmap='bone',
+    clim=[5000, 8000],
+)
 
 mm_to_vox = np.linalg.inv(template_nifti.affine)
 unique_enumbers = np.unique(loctable_mni['enumber'])
@@ -224,20 +278,22 @@ for i, eg in enumerate(unique_enumbers):
     plotter.add_points(evalues,
                        name=chr(65 + eg),
                        color=tab20(i),
-                       point_size=7,
+                       point_size=10,
                        opacity=0.8,
                        render_points_as_spheres=True)
-    plotter.add_point_labels(evalues[0],
-                             chr(65 + eg),
+    plotter.add_point_labels(evalues[0], [chr(65 + eg)],
                              text_color=tab20(i),
                              font_size=15,
                              point_size=1,
                              render=False)
 
-
 plotter.enable_terrain_style()
 plotter.remove_scalar_bar()
+plotter.camera.zoom(2)
+plotter.show(auto_close=False)
+plotter.export_html(os.path.join(args.coreg_folder, 'vis_electrodes_MNI.html'),
+                    backend='panel')
 
-plotter.open_movie(os.path.join(args.coreg_folder, 'mritemplate_electrodes.mp4'))
+plotter.open_movie(os.path.join(args.coreg_folder, 'vis_electrodes_MNI.mp4'))
 plotter.orbit_on_path(path, write_frames=True)
 plotter.close()

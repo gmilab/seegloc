@@ -1,7 +1,9 @@
 imageio-ffmpeg
-skimage
+scikit-image
 matplotlib
 numpy
 pandas
 pyvista
 nibabel
+pythreejs
+ipywidgets
