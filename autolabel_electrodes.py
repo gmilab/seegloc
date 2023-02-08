@@ -297,3 +297,24 @@ plotter.export_html(os.path.join(args.coreg_folder, 'vis_electrodes_MNI.html'),
 plotter.open_movie(os.path.join(args.coreg_folder, 'vis_electrodes_MNI.mp4'))
 plotter.orbit_on_path(path, write_frames=True)
 plotter.close()
+
+
+# write out electrode locations in MNI space to nifti file
+electrode_nifti = np.zeros(template_data.shape)
+
+# write coordinates to nifti
+n_side = 1
+mm_to_vox = np.linalg.inv(template_nifti.affine)
+for i, row in loctable.iterrows():
+    eg = ord(row['enumber']) - 65
+
+    # convert to voxel space
+    x, y, z = nibabel.affines.apply_affine(mm_to_vox, row[['x', 'y', 'z']].values).astype(int)
+
+    electrode_nifti[x-n_side:x+n_side+1, y-n_side:y+n_side+1, z-n_side:z+n_side+1] = eg + 1
+
+# save nifti
+nibabel.save(nibabel.Nifti1Image(electrode_nifti, template_nifti.affine, template_nifti.header),
+                os.path.join(args.coreg_folder, 'electrodes_marked_in_MNI.nii.gz'))
+
+print('All done!')
