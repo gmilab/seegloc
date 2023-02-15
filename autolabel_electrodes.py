@@ -1,4 +1,4 @@
-# from mayavi import mlab
+
 import numpy as np
 import nibabel
 import argparse
