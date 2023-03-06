@@ -24,3 +24,11 @@ pip install -r requirements.txt
 ./coregister_ctmri.sh /path/to/ct.nii.gz /path/to/mri.nii.gz /path/to/subject/coreg_output_dir
 vglrun python autolabel_electrodes.py /path/to/subject/coreg_output_dir
 ```
+
+#### Manual transforms
+Automatic electrode segmentation from CT may not always work in some cases where individual electrodes are not easily identified (eg. electrode is so bright there is no space between electrode contacts).  
+In this case:
+1. Manually identify electrodes in CT coordinates using `fsleyes`
+1. Run the `warpcoords_ct_to_MNI_manual.sh` script
+1. Paste manually marked CT coordinates into the terminal, then press `Ctrl + D`
+1. Copy warped MNI coordinates into label spreadsheet
