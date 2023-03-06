@@ -1,4 +1,3 @@
-
 import numpy as np
 import nibabel
 import argparse
@@ -174,8 +173,6 @@ loctable[['ename', 'x', 'y', 'z']].to_csv(os.path.join(args.coreg_folder,
                                                        'electrodes_CT.csv'),
                                           index=False)
 
-
-
 # warp coordinates into MNI space and plot on template brain
 print('Warping coordinates to MNI space...')
 loctable[['x', 'y', 'z']].to_csv(os.path.join(args.coreg_folder,
@@ -194,6 +191,27 @@ os.system(
         os.path.join(args.coreg_folder, 'temp_electrodes_CT.txt'),
         os.path.join(args.coreg_folder, 'temp_electrodes_MNI.txt'),
     ))
+
+# also save out shell script to run this command for any missed electrodes
+with open(os.path.join(args.coreg_folder, 'warpcoords_ct_to_MNI_manual.sh'),
+          'w') as f:
+    f.writelines([
+        '#!/bin/bash',
+        'echo "************************************************************"',
+        'echo "Paste CT coordinates in tab-separated format, one per line (eg. 1.0000  2.1292  -67.1231)"',
+        'echo "*** Press Ctrl+D when done ***"',
+        'cat - > temp_electrodes.txt',
+        'set -x',
+        'img2imgcoord -src "{}" -dest "{}" -premat "{}" -mm -warp "{}" "./temp_electrodes.txt"'
+        .format(
+            coreg_meta['src_ct'],
+            '/usr/local/fsl/data/standard/MNI152_T1_1mm.nii.gz',
+            os.path.join(args.coreg_folder, 'transform_CTtoMRI_affine.mat'),
+            os.path.join(args.coreg_folder,
+                         'transform_MRItoTemplate_fnirt.nii.gz'),
+        ),
+        'rm temp_electrodes.txt',
+    ])
 
 # read in MNI coordinates
 loctable_mni = np.loadtxt(os.path.join(args.coreg_folder,
@@ -220,18 +238,22 @@ for i, row in loctable_mni.iterrows():
     eg = row['enumber']
 
     # convert to voxel space
-    x, y, z = nibabel.affines.apply_affine(mm_to_vox, row[['x', 'y', 'z']].values).astype(int)
+    x, y, z = nibabel.affines.apply_affine(mm_to_vox,
+                                           row[['x', 'y',
+                                                'z']].values).astype(int)
 
-    electrode_nifti[x-n_side:x+n_side+1, y-n_side:y+n_side+1, z-n_side:z+n_side+1] = eg + 1
+    electrode_nifti[x - n_side:x + n_side + 1, y - n_side:y + n_side + 1,
+                    z - n_side:z + n_side + 1] = eg + 1
 
 # save nifti
-nibabel.save(nibabel.Nifti1Image(electrode_nifti, template_nifti.affine, template_nifti.header),
-                os.path.join(args.coreg_folder, 'electrodes_marked_in_MNI.nii.gz'))
+nibabel.save(
+    nibabel.Nifti1Image(electrode_nifti, template_nifti.affine,
+                        template_nifti.header),
+    os.path.join(args.coreg_folder, 'electrodes_marked_in_MNI.nii.gz'))
 
 # clean up temp files to reduce confusion
 os.remove(os.path.join(args.coreg_folder, 'temp_electrodes_CT.txt'))
 os.remove(os.path.join(args.coreg_folder, 'temp_electrodes_MNI.txt'))
-
 
 ######## PLOTTING ########
 print('Plotting on CT...')
@@ -276,7 +298,6 @@ plotter.open_movie(os.path.join(args.coreg_folder, 'vis_electrodes_CT.mp4'))
 plotter.orbit_on_path(path, write_frames=True)
 
 plotter.close()
-
 
 # plot on template brain
 print('Plotting on template...')
@@ -323,6 +344,5 @@ plotter.export_html(os.path.join(args.coreg_folder, 'vis_electrodes_MNI.html'),
 plotter.open_movie(os.path.join(args.coreg_folder, 'vis_electrodes_MNI.mp4'))
 plotter.orbit_on_path(path, write_frames=True)
 plotter.close()
-
 
 print('All done!')

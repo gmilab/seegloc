@@ -7,3 +7,5 @@ pyvista
 nibabel
 pythreejs
 ipywidgets
+panel
+
