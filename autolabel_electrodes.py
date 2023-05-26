@@ -29,6 +29,10 @@ parser.add_argument(
 
 args = parser.parse_args()
 
+# try initializing a pyvista plotter to make sure we have a valid OpenGL context
+plotter = pv.Plotter(off_screen=True)
+plotter.close()
+
 with open(args.coreg_folder + '/coregister_meta.json', 'r') as f:
     coreg_meta = json.load(f)
 
@@ -62,15 +66,24 @@ is_in_brain = [
 ]
 
 # cluster contacts by electrode
-print('Clustering electrodes...')
 # brain_center = nibabel.affines.apply_affine(np.linalg.inv(ct_nifti.affine), (0, 0, 0))
 brain_center = np.array(ct_nifti.shape) / 2
 electrodes_remaining = [p.centroid for p, i in zip(ct_elecs, is_in_brain) if i]
 
 
 def dist_line(lp1, lp2, p):
-    # compute distance between point p and line between lp1 and lp2
-    # https://mathworld.wolfram.com/Point-LineDistance3-Dimensional.html
+    ''' 
+    distance between point p and line between lp1 and lp2 in voxels 
+
+    :param lp1, lp2: any two unique points on the line
+    :param p: target point
+    
+    :return: distance in voxels
+
+    See https://mathworld.wolfram.com/Point-LineDistance3-Dimensional.html
+    
+    '''
+
     return np.linalg.norm(np.cross(np.subtract(lp2, lp1), np.subtract(
         lp1, p))) / np.linalg.norm(np.subtract(lp2, lp1))
 
@@ -84,13 +97,31 @@ def dist_real(p1, p2):
         ))
 
 
+print('Computing brain surface mesh...')
+grid = pv.UniformGrid(
+    dimensions=brainmask_data.shape,
+    spacing=brainmask_nifti.header.get_zooms()[:3],
+    origin=brainmask_nifti.affine[:3, 3],
+)
+mesh = grid.contour([0.5],
+                    scalars=(brainmask_data > 0).flatten('F'),
+                    method='marching_cubes')
+mesh = mesh.smooth(n_iter=200, relaxation_factor=0.1).clean().decimate(0.95)
+scalp_points = mesh.points.T
+def dist_to_scalp(p):
+    ''' distance to scalp mesh in mm '''
+    return np.amin(np.linalg.norm(
+        nibabel.affines.apply_affine(ct_nifti.affine, [1, 1, 1])[:,None] - scalp_points, axis=0))
+
+
+print('Clustering electrodes...')
 electrode_groups = []
 electrode_groups_dist = []
 while electrodes_remaining:
-    # find the furthest electrode from brain center
-    dists = [np.linalg.norm(p - brain_center) for p in electrodes_remaining]
+    # find the closest electrode to scalp
+    dists = [dist_to_scalp(p) for p in electrodes_remaining]
 
-    furthest_electrode = electrodes_remaining.pop(np.argmax(dists))
+    furthest_electrode = electrodes_remaining.pop(np.argmin(dists))
     #electrodes_remaining.remove(furthest_electrode)
 
     # compute number of electrodes on the line, if we draw a line between this electrode and every other electrode remaining
@@ -196,13 +227,13 @@ os.system(
 with open(os.path.join(args.coreg_folder, 'warpcoords_ct_to_MNI_manual.sh'),
           'w') as f:
     f.writelines([
-        '#!/bin/bash',
-        'echo "************************************************************"',
-        'echo "Paste CT coordinates in tab-separated format, one per line (eg. 1.0000  2.1292  -67.1231)"',
-        'echo "*** Press Ctrl+D when done ***"',
-        'cat - > temp_electrodes.txt',
-        'set -x',
-        'img2imgcoord -src "{}" -dest "{}" -premat "{}" -mm -warp "{}" "./temp_electrodes.txt"'
+        '#!/bin/bash\n',
+        'echo "************************************************************"\n',
+        'echo "Paste CT coordinates in tab-separated format, one per line (eg. 1.0000  2.1292  -67.1231)"\n',
+        'echo "*** Press Ctrl+D when done ***"\n',
+        'cat - > temp_electrodes.txt\n',
+        'set -x\n',
+        'img2imgcoord -src "{}" -dest "{}" -premat "{}" -mm -warp "{}" "./temp_electrodes.txt"\n'
         .format(
             coreg_meta['src_ct'],
             '/usr/local/fsl/data/standard/MNI152_T1_1mm.nii.gz',
@@ -210,7 +241,7 @@ with open(os.path.join(args.coreg_folder, 'warpcoords_ct_to_MNI_manual.sh'),
             os.path.join(args.coreg_folder,
                          'transform_MRItoTemplate_fnirt.nii.gz'),
         ),
-        'rm temp_electrodes.txt',
+        'rm temp_electrodes.txt\n\n',
     ])
 
 # read in MNI coordinates
