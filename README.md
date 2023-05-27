@@ -10,8 +10,8 @@ Automatically mark electrode contacts in post-insertion CT imaging, roughly clus
 - fsl fnirt (non-linear coregistration) of Subject MRI <=> MNI152 template
 
 ## Installation
-- requires FMIRB Software Library (FSL)
-- requires X Desktop with OpenGL (run in VNC or in Desktop)
+- requires FMRIB Software Library (FSL)
+- requires X Windows System with OpenGL (run in VNC or in Desktop)
 
 ``` bash
 git clone https://github.com/gmilab/electrode_localizer
