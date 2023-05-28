@@ -28,7 +28,7 @@ FSLDIR=/usr/local/fsl
 # linear transform CT to MRI
 # - the brain is probably the same shape
 # - we don't have enough soft tissue contrast to do non-linear registration
-$FSLDIR/bin/flirt -in "$1" -ref "$MRI" -out "$3/CT/CT_inMRIspace.nii.gz" -omat "$3/CT/transform_CTtoMRI_affine.mat" -bins 256 -cost mutualinfo -searchrx -75 75 -searchry -75 75 -searchrz -75 75 -dof 12  #change3 x lots
+$FSLDIR/bin/flirt -in "$1" -ref "$MRI" -out "$3/CT/CT_inMRIspace.nii.gz" -omat "$3/CT/transform_CTtoMRI_affine.mat" -bins 256 -cost mutualinfo -searchrx -75 75 -searchry -75 75 -searchrz -75 75 -dof 12
 
 # BET the subject MRI for template registration
 $FSLDIR/bin/bet "$MRI" "$3/MRI/MRI_betted.nii.gz"
