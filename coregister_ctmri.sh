@@ -67,7 +67,7 @@ fsleyes render --scene lightbox --zaxis 2 --sliceSpacing 5.5 --zrange 0 181 --nc
 fsleyes render --scene lightbox --zaxis 2 --sliceSpacing 5.5 --zrange 10 150 --ncols 9 --nrows 3 -of "$3/CT/CT_inMRI_ax.png"  -sz 2560 1440 "$MRI" --alpha 100.0 --cmap greyscale "$3/CT/CT_inMRIspace.nii.gz" --overlayType volume --alpha 100 --cmap red --displayRange 180.0 2000.0
 
 # write out json file with source filenames
-cat << EOF > "$3/coregister_meta.json"
+cat << EOF > "$3/log/coregister_meta.json"
 {
     "src_ct": "$1",
     "src_mri": "$MRI"
