@@ -4,7 +4,7 @@ import argparse
 import skimage, skimage.measure
 import pyvista as pv
 import json
-import os.path
+import os, os.path
 import matplotlib.pyplot as plt
 import pandas as pd
 
@@ -33,8 +33,11 @@ args = parser.parse_args()
 plotter = pv.Plotter(off_screen=True)
 plotter.close()
 
-with open(args.coreg_folder + '/coregister_meta.json', 'r') as f:
+with open(args.coreg_folder + '/log/coregister_meta.json', 'r') as f:
     coreg_meta = json.load(f)
+
+# create output subdirectory
+os.system('if [ ! -d ' + args.coreg_folder + '/electrodes ]; then mkdir -p ' + args.coreg_folder + '/electrodes; fi')
 
 # load ct image
 print('Loading CT image...')
@@ -56,7 +59,7 @@ ct_elecs = [
 
 # load brain mask
 brainmask_nifti = nibabel.load(
-    os.path.join(args.coreg_folder, 'brainmask_inCT.nii.gz'))
+    os.path.join(args.coreg_folder, 'CT/brainmask_inCT.nii.gz'))
 brainmask_data = brainmask_nifti.get_fdata()
 
 # filter out blobs that are outside the brain
@@ -201,13 +204,13 @@ loctable[['x', 'y', 'z']] = loctable.apply(lambda r: pd.Series(
     nibabel.affines.apply_affine(ct_nifti.affine, r[['x', 'y', 'z']].values)),
                                            axis=1)
 loctable[['ename', 'x', 'y', 'z']].to_csv(os.path.join(args.coreg_folder,
-                                                       'electrodes_CT.csv'),
+                                                       'electrodes/electrodes_CT.csv'),
                                           index=False)
 
 # warp coordinates into MNI space and plot on template brain
 print('Warping coordinates to MNI space...')
 loctable[['x', 'y', 'z']].to_csv(os.path.join(args.coreg_folder,
-                                              'temp_electrodes_CT.txt'),
+                                              'electrodes/temp_electrodes_CT.txt'),
                                  index=False,
                                  header=False,
                                  sep='\t')
@@ -216,15 +219,15 @@ os.system(
     format(
         coreg_meta['src_ct'],
         '/usr/local/fsl/data/standard/MNI152_T1_1mm.nii.gz',
-        os.path.join(args.coreg_folder, 'transform_CTtoMRI_affine.mat'),
+        os.path.join(args.coreg_folder, 'CT/transform_CTtoMRI_affine.mat'),
         os.path.join(args.coreg_folder,
-                     'transform_MRItoTemplate_fnirt.nii.gz'),
-        os.path.join(args.coreg_folder, 'temp_electrodes_CT.txt'),
-        os.path.join(args.coreg_folder, 'temp_electrodes_MNI.txt'),
+                     'MRI/transform_MRItoTemplate_fnirt.nii.gz'),
+        os.path.join(args.coreg_folder, 'electrodes/temp_electrodes_CT.txt'),
+        os.path.join(args.coreg_folder, 'electrodes/temp_electrodes_MNI.txt'),
     ))
 
 # also save out shell script to run this command for any missed electrodes
-with open(os.path.join(args.coreg_folder, 'warpcoords_ct_to_MNI_manual.sh'),
+with open(os.path.join(args.coreg_folder, 'CT/warpcoords_ct_to_MNI_manual.sh'),
           'w') as f:
     f.writelines([
         '#!/bin/bash\n',
@@ -237,23 +240,23 @@ with open(os.path.join(args.coreg_folder, 'warpcoords_ct_to_MNI_manual.sh'),
         .format(
             coreg_meta['src_ct'],
             '/usr/local/fsl/data/standard/MNI152_T1_1mm.nii.gz',
-            os.path.join(args.coreg_folder, 'transform_CTtoMRI_affine.mat'),
+            os.path.join(args.coreg_folder, 'CT/transform_CTtoMRI_affine.mat'),
             os.path.join(args.coreg_folder,
-                         'transform_MRItoTemplate_fnirt.nii.gz'),
+                         'MRI/transform_MRItoTemplate_fnirt.nii.gz'),
         ),
         'rm temp_electrodes.txt\n\n',
     ])
 
 # read in MNI coordinates
 loctable_mni = np.loadtxt(os.path.join(args.coreg_folder,
-                                       'temp_electrodes_MNI.txt'),
+                                       'electrodes/temp_electrodes_MNI.txt'),
                           skiprows=1)
 loctable_mni = pd.DataFrame(loctable_mni, columns=['x', 'y', 'z'])
 loctable_mni['ename'] = loctable['ename']
 loctable_mni['enumber'] = loctable['enumber']
 loctable_mni[['ename', 'x', 'y',
               'z']].to_csv(os.path.join(args.coreg_folder,
-                                        'electrodes_MNI.csv'),
+                                        'electrodes/electrodes_MNI.csv'),
                            index=False)
 
 # write out electrode locations in MNI space to nifti file
@@ -280,11 +283,11 @@ for i, row in loctable_mni.iterrows():
 nibabel.save(
     nibabel.Nifti1Image(electrode_nifti, template_nifti.affine,
                         template_nifti.header),
-    os.path.join(args.coreg_folder, 'electrodes_marked_in_MNI.nii.gz'))
+    os.path.join(args.coreg_folder, 'electrodes/electrodes_marked_in_MNI.nii.gz'))
 
 # clean up temp files to reduce confusion
-os.remove(os.path.join(args.coreg_folder, 'temp_electrodes_CT.txt'))
-os.remove(os.path.join(args.coreg_folder, 'temp_electrodes_MNI.txt'))
+os.remove(os.path.join(args.coreg_folder, 'electrodes/temp_electrodes_CT.txt'))
+os.remove(os.path.join(args.coreg_folder, 'electrodes/temp_electrodes_MNI.txt'))
 
 ######## PLOTTING ########
 print('Plotting on CT...')
@@ -320,12 +323,12 @@ plotter.remove_scalar_bar()
 plotter.camera.zoom(3)
 plotter.show(auto_close=False)
 #plotter.camera.parallel_scale = 50
-plotter.export_html(os.path.join(args.coreg_folder, 'vis_electrodes_CT.html'),
+plotter.export_html(os.path.join(args.coreg_folder, 'electrodes/vis_electrodes_CT.html'),
                     backend='panel')
 
 # orbit the thing
 path = plotter.generate_orbital_path(n_points=90, shift=3 * ct_nifti.shape[2])
-plotter.open_movie(os.path.join(args.coreg_folder, 'vis_electrodes_CT.mp4'))
+plotter.open_movie(os.path.join(args.coreg_folder, 'electrodes/vis_electrodes_CT.mp4'))
 plotter.orbit_on_path(path, write_frames=True)
 
 plotter.close()
@@ -369,10 +372,10 @@ plotter.enable_terrain_style()
 plotter.remove_scalar_bar()
 plotter.camera.zoom(2)
 plotter.show(auto_close=False)
-plotter.export_html(os.path.join(args.coreg_folder, 'vis_electrodes_MNI.html'),
+plotter.export_html(os.path.join(args.coreg_folder, 'electrodes/vis_electrodes_MNI.html'),
                     backend='panel')
 
-plotter.open_movie(os.path.join(args.coreg_folder, 'vis_electrodes_MNI.mp4'))
+plotter.open_movie(os.path.join(args.coreg_folder, 'electrodes/vis_electrodes_MNI.mp4'))
 plotter.orbit_on_path(path, write_frames=True)
 plotter.close()
 
