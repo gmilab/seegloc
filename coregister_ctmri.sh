@@ -4,7 +4,7 @@
 #  coregster_ctmri.sh [subject CT] [subject MRI] [output directory]
 
 # make the output directory if it doesn't exist
-[[ ! -d "$3" ]] && mkdir "$3"
+[[ ! -d "$3" ]] && mkdir -p "$3"
 
 # log commands and outputs to the run log
 exec &> >(tee -a "$3/run_log.txt")
