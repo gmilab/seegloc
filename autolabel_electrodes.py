@@ -30,8 +30,16 @@ parser.add_argument(
 args = parser.parse_args()
 
 # try initializing a pyvista plotter to make sure we have a valid OpenGL context
-plotter = pv.Plotter(off_screen=True)
-plotter.close()
+try:
+    plotter = pv.Plotter(off_screen=True)
+    plotter.show(auto_close=False)
+    plotter.screenshot()
+    plotter.close()
+
+except:
+    raise(RuntimeError)(
+        'Could not initialize OpenGL context. Make sure you are running this script with vglrun or from a desktop environment.'
+    )
 
 with open(args.coreg_folder + '/coregister_meta.json', 'r') as f:
     coreg_meta = json.load(f)
@@ -108,10 +116,15 @@ mesh = grid.contour([0.5],
                     method='marching_cubes')
 mesh = mesh.smooth(n_iter=200, relaxation_factor=0.1).clean().decimate(0.95)
 scalp_points = mesh.points.T
+
+
 def dist_to_scalp(p):
     ''' distance to scalp mesh in mm '''
-    return np.amin(np.linalg.norm(
-        nibabel.affines.apply_affine(ct_nifti.affine, [1, 1, 1])[:,None] - scalp_points, axis=0))
+    return np.amin(
+        np.linalg.norm(
+            nibabel.affines.apply_affine(ct_nifti.affine, [1, 1, 1])[:, None] -
+            scalp_points,
+            axis=0))
 
 
 print('Clustering electrodes...')
@@ -293,7 +306,7 @@ print('Plotting on CT...')
 ct_data = np.clip(ct_data, 0, args.threshold)
 tab20 = plt.get_cmap('tab20')
 
-plotter = pv.Plotter(off_screen=True)
+plotter = pv.Plotter(off_screen=True, window_size=(3008, 1808))
 plotter.add_volume(
     ct_data,
     name='ct_data',
@@ -306,18 +319,17 @@ for i, eg in enumerate(electrode_groups):
     plotter.add_points(np.vstack(eg),
                        name=chr(65 + i),
                        color=tab20(i),
-                       point_size=10,
+                       point_size=20,
                        opacity=0.8,
                        render_points_as_spheres=True)
     plotter.add_point_labels((eg[0]), [chr(65 + i)],
                              text_color=tab20(i),
-                             font_size=15,
+                             font_size=30,
                              point_size=1,
                              render=False)
 
 plotter.enable_terrain_style()
 plotter.remove_scalar_bar()
-plotter.camera.zoom(3)
 plotter.show(auto_close=False)
 #plotter.camera.parallel_scale = 50
 plotter.export_html(os.path.join(args.coreg_folder, 'vis_electrodes_CT.html'),
@@ -325,7 +337,11 @@ plotter.export_html(os.path.join(args.coreg_folder, 'vis_electrodes_CT.html'),
 
 # orbit the thing
 path = plotter.generate_orbital_path(n_points=90, shift=3 * ct_nifti.shape[2])
+path = path.merge(
+    plotter.generate_orbital_path(n_points=90,
+                                  shift=0))
 plotter.open_movie(os.path.join(args.coreg_folder, 'vis_electrodes_CT.mp4'))
+plotter.camera.zoom(3)
 plotter.orbit_on_path(path, write_frames=True)
 
 plotter.close()
@@ -335,7 +351,8 @@ print('Plotting on template...')
 template_nifti = nibabel.load(
     '/usr/local/fsl/data/standard/MNI152_T1_1mm_brain.nii.gz')
 template_data = template_nifti.get_fdata()
-plotter = pv.Plotter(off_screen=True)
+
+plotter = pv.Plotter(off_screen=True, window_size=(3008, 1808))
 plotter.add_volume(
     template_data,
     name='template',
@@ -356,23 +373,23 @@ for i, eg in enumerate(unique_enumbers):
     plotter.add_points(evalues,
                        name=chr(65 + eg),
                        color=tab20(i),
-                       point_size=10,
+                       point_size=20,
                        opacity=0.8,
                        render_points_as_spheres=True)
     plotter.add_point_labels(evalues[0], [chr(65 + eg)],
                              text_color=tab20(i),
-                             font_size=15,
+                             font_size=30,
                              point_size=1,
                              render=False)
 
 plotter.enable_terrain_style()
 plotter.remove_scalar_bar()
-plotter.camera.zoom(2)
 plotter.show(auto_close=False)
 plotter.export_html(os.path.join(args.coreg_folder, 'vis_electrodes_MNI.html'),
                     backend='panel')
 
 plotter.open_movie(os.path.join(args.coreg_folder, 'vis_electrodes_MNI.mp4'))
+plotter.camera.zoom(3)
 plotter.orbit_on_path(path, write_frames=True)
 plotter.close()
 
