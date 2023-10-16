@@ -12,7 +12,7 @@ exec &> >(tee -a "$3/run_log.txt")
 echo "===============================================" >> "$3/run_log.txt"
 echo $(date) >> "$3/run_log.txt"
 echo $USER >> "$3/run_log.txt"
-echo $(pwd) $0 $1 $2 $3 >> "$3/run_log.txt"
+echo $(pwd) \$ $0 $1 $2 $3 >> "$3/run_log.txt"
 
 set -x #echo on
 FSLDIR=/usr/local/fsl
@@ -20,7 +20,7 @@ FSLDIR=/usr/local/fsl
 # linear transform CT to MRI
 # - the brain is probably the same shape
 # - we don't have enough soft tissue contrast to do non-linear registration
-$FSLDIR/bin/flirt -in "$1" -ref "$2" -out "$3/CT_inMRIspace.nii.gz" -omat "$3/transform_CTtoMRI_affine.mat" -bins 256 -cost mutualinfo -searchrx -75 75 -searchry -75 75 -searchrz -75 75 -dof 12
+$FSLDIR/bin/flirt -in "$1" -ref "$2" -out "$3/vol_CT_inMRIspace.nii.gz" -omat "$3/transform_CTtoMRI_affine.mat" -bins 256 -cost mutualinfo -searchrx -75 75 -searchry -75 75 -searchrz -75 75 -dof 12
 
 # BET the subject MRI for template registration
 $FSLDIR/bin/bet "$2" "$3/vol_MRI_betted.nii.gz"
@@ -54,4 +54,4 @@ cat << EOF > $3/coregister_meta.json
 EOF
 
 # render QC images
-. ./coregister_ct_mri_renderimage.sh $3
+coregister_renderimages $3

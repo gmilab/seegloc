@@ -25,7 +25,7 @@ parser.add_argument(
     'Minimum and maximum acceptable contiguous volume for an electrode (mm^3)',
     type=int,
     nargs=2,
-    default=[1.25, 10.0])
+    default=[1.25, 20.0])
 
 args = parser.parse_args()
 
@@ -37,9 +37,10 @@ try:
     plotter.close()
 
 except:
-    raise(RuntimeError)(
-        'Could not initialize OpenGL context. Make sure you are running this script with vglrun or from a desktop environment.'
-    )
+    raise (
+        RuntimeError
+    )('Could not initialize OpenGL context. Make sure you are running this script with vglrun or from a desktop environment.'
+      )
 
 with open(args.coreg_folder + '/coregister_meta.json', 'r') as f:
     coreg_meta = json.load(f)
@@ -56,27 +57,35 @@ ct_props = skimage.measure.regionprops(ct_label)
 
 # filter list of putative electrodes by size
 voxel_volume = np.abs(np.prod(np.diag(ct_nifti.affine)[:3]))
-ct_elecs = [
-    p for p in ct_props
-    if p.area > (args.electrode_vol_thresh[0] / voxel_volume) and p.area <
-    (args.electrode_vol_thresh[1] / voxel_volume)
-]
+
+# create datatable of properties
+ct_elecs = pd.DataFrame([(p.centroid, p.area) for p in ct_props],
+                        columns=['centroid', 'area'])
+ct_elecs['size_ok'] = True
+
+# filter out blobs that are too small or too large
+ct_elecs['area_mm3'] = ct_elecs['area'] * voxel_volume
+ct_elecs.loc[ct_elecs['area_mm3'] < args.electrode_vol_thresh[0],
+             'size_ok'] = False
+ct_elecs.loc[ct_elecs['area_mm3'] > args.electrode_vol_thresh[1],
+             'size_ok'] = False
 
 # load brain mask
 brainmask_nifti = nibabel.load(
-    os.path.join(args.coreg_folder, 'brainmask_inCT.nii.gz'))
+    os.path.join(args.coreg_folder, 'vol_brainmask_inCT.nii.gz'))
 brainmask_data = brainmask_nifti.get_fdata()
 
 # filter out blobs that are outside the brain
-is_in_brain = [
-    brainmask_data[tuple(np.array(p.centroid).astype(int))] > 0
-    for p in ct_elecs
-]
+ct_elecs['in_brain'] = ct_elecs.apply(
+    lambda r: brainmask_data[tuple(np.array(r['centroid']).astype(int))] > 0,
+    axis=1)
+
+ct_elecs.to_csv(args.coreg_folder + '/debug_electrodes.csv', index=False)
 
 # cluster contacts by electrode
-# brain_center = nibabel.affines.apply_affine(np.linalg.inv(ct_nifti.affine), (0, 0, 0))
 brain_center = np.array(ct_nifti.shape) / 2
-electrodes_remaining = [p.centroid for p, i in zip(ct_elecs, is_in_brain) if i]
+electrodes_remaining = ct_elecs.loc[ct_elecs['in_brain'] & ct_elecs['size_ok'],
+                                    'centroid'].tolist()
 
 
 def dist_line(lp1, lp2, p):
@@ -122,7 +131,7 @@ def dist_to_scalp(p):
     ''' distance to scalp mesh in mm '''
     return np.amin(
         np.linalg.norm(
-            nibabel.affines.apply_affine(ct_nifti.affine, [1, 1, 1])[:, None] -
+            nibabel.affines.apply_affine(ct_nifti.affine, p)[:, None] -
             scalp_points,
             axis=0))
 
@@ -136,6 +145,9 @@ while electrodes_remaining:
 
     furthest_electrode = electrodes_remaining.pop(np.argmin(dists))
     #electrodes_remaining.remove(furthest_electrode)
+
+    if len(electrodes_remaining) == 0:
+        break
 
     # compute number of electrodes on the line, if we draw a line between this electrode and every other electrode remaining
     n_contacts = np.zeros(len(electrodes_remaining))
@@ -165,7 +177,7 @@ while electrodes_remaining:
                 n_contacts[ilp2] = 0
 
     # find the electrode with maximum number of contacts
-    # if multiple, choose closest point to brain center
+    # if multiple, choose furthest point away from the scalp
     n_contacts_max_idx = np.argmax(n_contacts)
 
     n_max = np.sum(n_contacts == n_contacts[n_contacts_max_idx])
@@ -173,10 +185,11 @@ while electrodes_remaining:
         maximal_electrodes = [(i, electrodes_remaining[i])
                               for i, n in enumerate(n_contacts)
                               if n == n_contacts[n_contacts_max_idx]]
-        dists = [
-            np.linalg.norm(p - brain_center) for pi, p in maximal_electrodes
-        ]
-        end_electrode_idx = maximal_electrodes[np.argmin(dists)][0]
+        # dists = [
+        #     np.linalg.norm(p - brain_center) for pi, p in maximal_electrodes
+        # ]
+        dists = [dist_to_scalp(p) for pi, p in maximal_electrodes]
+        end_electrode_idx = maximal_electrodes[np.argmax(dists)][0]
     else:
         end_electrode_idx = n_contacts_max_idx
 
@@ -264,10 +277,56 @@ loctable_mni = np.loadtxt(os.path.join(args.coreg_folder,
 loctable_mni = pd.DataFrame(loctable_mni, columns=['x', 'y', 'z'])
 loctable_mni['ename'] = loctable['ename']
 loctable_mni['enumber'] = loctable['enumber']
-loctable_mni[['ename', 'x', 'y',
-              'z']].to_csv(os.path.join(args.coreg_folder,
-                                        'electrodes_MNI.csv'),
-                           index=False)
+
+# lookup AAL regions
+from fuzzyquery_aal import lookup_aal_region
+
+print('Looking up AAL regions...')
+loctable_mni['aal'] = ''
+for i, row in loctable_mni.iterrows():
+    loctable_mni.loc[i, 'aal'] = lookup_aal_region(row[['x', 'y',
+                                                        'z']].tolist(),
+                                                   fuzzy_dist=10)[1]
+
+# identify closest scalp electrode
+# - electrode locations from MNE scalp montage
+loctable_mni['entry'] = ''
+pos_1020 = pd.read_csv('atlases/1020_positions.csv')
+pos_1020[['x', 'y', 'z']] = pos_1020[['x', 'y', 'z']] * 1000  # convert to mm
+for eg in loctable_mni['enumber'].unique():
+    # get closest and furthest electrode
+    closest_electrode = loctable_mni[loctable_mni['enumber'] == eg].iloc[0][[
+        'x', 'y', 'z'
+    ]].tolist()
+    furthest_electrode = loctable_mni[loctable_mni['enumber'] == eg].iloc[-1][[
+        'x', 'y', 'z'
+    ]].tolist()
+
+    # get closest scalp electrode
+    dists_closest = [
+        dist_real(closest_electrode, p.tolist())
+        for ip, p in pos_1020[['x', 'y', 'z']].iterrows()
+    ]
+    dists_furthest = [
+        dist_real(furthest_electrode, p.tolist())
+        for ip, p in pos_1020[['x', 'y', 'z']].iterrows()
+    ]
+
+    if np.amin(dists_closest) < np.amin(dists_furthest):
+        closest_scalp_electrode = pos_1020.iloc[np.argmin(
+            dists_closest)]['label']
+    else:
+        closest_scalp_electrode = pos_1020.iloc[np.argmin(
+            dists_furthest)]['label']
+
+    # write to table
+    loctable_mni.loc[loctable_mni['enumber'] == eg,
+                     'entry'] = closest_scalp_electrode
+
+loctable_mni[['ename', 'x', 'y', 'z', 'aal',
+              'entry']].to_csv(os.path.join(args.coreg_folder,
+                                            'electrodes_MNI.csv'),
+                               index=False)
 
 # write out electrode locations in MNI space to nifti file
 print('Writing electrode locations into a NIFTI file in MNI space...')
@@ -293,7 +352,7 @@ for i, row in loctable_mni.iterrows():
 nibabel.save(
     nibabel.Nifti1Image(electrode_nifti, template_nifti.affine,
                         template_nifti.header),
-    os.path.join(args.coreg_folder, 'electrodes_marked_in_MNI.nii.gz'))
+    os.path.join(args.coreg_folder, 'qcvol_electrodes_marked_in_MNI.nii.gz'))
 
 # clean up temp files to reduce confusion
 os.remove(os.path.join(args.coreg_folder, 'temp_electrodes_CT.txt'))
@@ -337,9 +396,7 @@ plotter.export_html(os.path.join(args.coreg_folder, 'vis_electrodes_CT.html'),
 
 # orbit the thing
 path = plotter.generate_orbital_path(n_points=90, shift=3 * ct_nifti.shape[2])
-path = path.merge(
-    plotter.generate_orbital_path(n_points=90,
-                                  shift=0))
+path = path.merge(plotter.generate_orbital_path(n_points=90, shift=0))
 plotter.open_movie(os.path.join(args.coreg_folder, 'vis_electrodes_CT.mp4'))
 plotter.camera.zoom(3)
 plotter.orbit_on_path(path, write_frames=True)
