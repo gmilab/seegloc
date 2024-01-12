@@ -26,6 +26,11 @@ parser.add_argument(
     type=int,
     nargs=2,
     default=[1.25, 20.0])
+parser.add_argument('--dilation',
+                    '-d',
+                    default=5.0,
+                    help='Brain mask dilation radius (mm)',
+                    type=float)
 
 args = parser.parse_args()
 
@@ -74,6 +79,14 @@ ct_elecs.loc[ct_elecs['area_mm3'] > args.electrode_vol_thresh[1],
 brainmask_nifti = nibabel.load(
     os.path.join(args.coreg_folder, 'vol_brainmask_inCT.nii.gz'))
 brainmask_data = brainmask_nifti.get_fdata()
+
+# dilate
+dilate_vx = args.dilation / ct_nifti.get_zooms()[:3]
+brainmask_data = skimage.morphology.binary_dilation(
+    brainmask_data,
+    footprint=[(np.ones((dilate_vx[0], 1, 1)), 1),
+               (np.ones((1, dilate_vx[1], 1)), 1),
+               (np.ones((1, 1, dilate_vx[2])), 1)])
 
 # filter out blobs that are outside the brain
 ct_elecs['in_brain'] = ct_elecs.apply(
@@ -291,7 +304,8 @@ for i, row in loctable_mni.iterrows():
 # identify closest scalp electrode
 # - electrode locations from MNE scalp montage
 loctable_mni['entry'] = ''
-pos_1020 = pd.read_csv('atlases/1020_positions.csv')
+pos_1020 = pd.read_csv(
+    os.path.join(os.path.split(__file__)[0], 'atlases', '1020_positions.csv'))
 pos_1020[['x', 'y', 'z']] = pos_1020[['x', 'y', 'z']] * 1000  # convert to mm
 for eg in loctable_mni['enumber'].unique():
     # get closest and furthest electrode
