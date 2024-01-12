@@ -1,7 +1,7 @@
 import re
 import argparse
 import sys
-from typing import Tuple, Union, Optional, List
+from typing import Tuple, Union, Optional, List, Sequence
 import os.path
 
 import pandas as pd
@@ -60,6 +60,15 @@ def lookup_aal_region(
     '''
     Lookup AAL region for a given coordinate, using the AAL3 atlas. If fuzzy is True, then the nearest region within 5mm is returned.
     '''
+    # check inputs
+    if not isinstance(coords_mm, Sequence):
+        raise ValueError('coords_mm must be a tuple or list')
+    elif len(coords_mm) != 3:
+        raise ValueError('coords_mm must be a tuple or list of length 3')
+    elif not all([isinstance(x, (int, float)) for x in coords_mm]):
+        raise ValueError('coords_mm must be a tuple or list of numbers')
+    elif any([np.isnan(x) for x in coords_mm]):
+        raise ValueError('coords_mm cannot contain NaNs')
 
     # load atlas
     if isinstance(atlas_data, str):
