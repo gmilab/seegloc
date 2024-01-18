@@ -7,6 +7,7 @@ import json
 import os.path
 import matplotlib.pyplot as plt
 import pandas as pd
+from pv_plotter import get_plotter
 
 parser = argparse.ArgumentParser(
     'Automatically identify electrodes from a post-insertion CT image, cluster them into electrodes, and convert to MNI coordinates. Must be executed using vglrun.'
@@ -81,7 +82,8 @@ brainmask_nifti = nibabel.load(
 brainmask_data = brainmask_nifti.get_fdata()
 
 # dilate
-dilate_vx = args.dilation / ct_nifti.get_zooms()[:3]
+dilate_vx = (args.dilation /
+             np.array(ct_nifti.header.get_zooms()[:3])).astype(int)
 brainmask_data = skimage.morphology.binary_dilation(
     brainmask_data,
     footprint=[(np.ones((dilate_vx[0], 1, 1)), 1),
@@ -183,10 +185,16 @@ while electrodes_remaining:
 
         # if spacing is too large, or too inconsistent, set n_contacts to 0
         if len(ccontacts) > 2:
-            if np.ptp(np.diff([0] + np.sort(distance_from_tip[-1]))) > 5:
+            interelectrode_spacing = np.diff([0] +
+                                             np.sort(distance_from_tip[-1]))
+            if np.ptp(interelectrode_spacing) > 5:  # variation in spacing
                 n_contacts[ilp2] = 0
 
-            if np.max(distance_from_tip[-1]) > 100:
+            if np.max(distance_from_tip[-1]) > 175:  # max length
+                n_contacts[ilp2] = 0
+
+            if np.sum((interelectrode_spacing > 12)
+                      | (interelectrode_spacing < 2)) > 1:  # spacing abs value
                 n_contacts[ilp2] = 0
 
     # find the electrode with maximum number of contacts
@@ -379,43 +387,28 @@ print('Plotting on CT...')
 ct_data = np.clip(ct_data, 0, args.threshold)
 tab20 = plt.get_cmap('tab20')
 
-plotter = pv.Plotter(off_screen=True, window_size=(3008, 1808))
-plotter.add_volume(
-    ct_data,
-    name='ct_data',
-    opacity=[0.0, 0.3, 0.07],
-    cmap='bone',
-    clim=[1000, args.threshold],
-)
+with get_plotter(os.path.join(args.coreg_folder,
+                              'vis_electrodes_CT')) as plotter:
+    plotter.add_volume(
+        ct_data,
+        name='ct_data',
+        opacity=[0.0, 0.2, 0.07],
+        cmap='bone',
+        clim=[1000, args.threshold],
+    )
 
-for i, eg in enumerate(electrode_groups):
-    plotter.add_points(np.vstack(eg),
-                       name=chr(65 + i),
-                       color=tab20(i),
-                       point_size=20,
-                       opacity=0.8,
-                       render_points_as_spheres=True)
-    plotter.add_point_labels((eg[0]), [chr(65 + i)],
-                             text_color=tab20(i),
-                             font_size=30,
-                             point_size=1,
-                             render=False)
-
-plotter.enable_terrain_style()
-plotter.remove_scalar_bar()
-plotter.show(auto_close=False)
-#plotter.camera.parallel_scale = 50
-plotter.export_html(os.path.join(args.coreg_folder, 'vis_electrodes_CT.html'),
-                    backend='panel')
-
-# orbit the thing
-path = plotter.generate_orbital_path(n_points=90, shift=3 * ct_nifti.shape[2])
-path = path.merge(plotter.generate_orbital_path(n_points=90, shift=0))
-plotter.open_movie(os.path.join(args.coreg_folder, 'vis_electrodes_CT.mp4'))
-plotter.camera.zoom(3)
-plotter.orbit_on_path(path, write_frames=True)
-
-plotter.close()
+    for i, eg in enumerate(electrode_groups):
+        plotter.add_points(np.vstack(eg),
+                           name=chr(65 + i),
+                           color=tab20(i),
+                           point_size=20,
+                           opacity=0.8,
+                           render_points_as_spheres=True)
+        plotter.add_point_labels((eg[0]), [chr(65 + i)],
+                                 text_color=tab20(i),
+                                 font_size=30,
+                                 point_size=1,
+                                 render=False)
 
 # plot on template brain
 print('Plotting on template...')
@@ -423,45 +416,35 @@ template_nifti = nibabel.load(
     '/usr/local/fsl/data/standard/MNI152_T1_1mm_brain.nii.gz')
 template_data = template_nifti.get_fdata()
 
-plotter = pv.Plotter(off_screen=True, window_size=(3008, 1808))
-plotter.add_volume(
-    template_data,
-    name='template',
-    opacity=[0, 0.02, 0.01],
-    cmap='bone',
-    clim=[5000, 8000],
-)
+with get_plotter(os.path.join(args.coreg_folder,
+                              'vis_electrodes_MNI')) as plotter:
+    plotter.add_volume(
+        template_data,
+        name='template',
+        opacity=[0, 0.02, 0.01],
+        cmap='bone',
+        clim=[5000, 8000],
+    )
 
-mm_to_vox = np.linalg.inv(template_nifti.affine)
-unique_enumbers = np.unique(loctable_mni['enumber'])
-for i, eg in enumerate(unique_enumbers):
-    evalues = loctable_mni[loctable_mni['enumber'] == eg][['x', 'y', 'z']]
+    mm_to_vox = np.linalg.inv(template_nifti.affine)
+    unique_enumbers = np.unique(loctable_mni['enumber'])
+    for i, eg in enumerate(unique_enumbers):
+        evalues = loctable_mni[loctable_mni['enumber'] == eg][['x', 'y', 'z']]
 
-    # convert to voxel space
-    evalues = nibabel.affines.apply_affine(mm_to_vox, evalues)
+        # convert to voxel space
+        evalues = nibabel.affines.apply_affine(mm_to_vox, evalues)
 
-    eg = int(eg)
-    plotter.add_points(evalues,
-                       name=chr(65 + eg),
-                       color=tab20(i),
-                       point_size=20,
-                       opacity=0.8,
-                       render_points_as_spheres=True)
-    plotter.add_point_labels(evalues[0], [chr(65 + eg)],
-                             text_color=tab20(i),
-                             font_size=30,
-                             point_size=1,
-                             render=False)
-
-plotter.enable_terrain_style()
-plotter.remove_scalar_bar()
-plotter.show(auto_close=False)
-plotter.export_html(os.path.join(args.coreg_folder, 'vis_electrodes_MNI.html'),
-                    backend='panel')
-
-plotter.open_movie(os.path.join(args.coreg_folder, 'vis_electrodes_MNI.mp4'))
-plotter.camera.zoom(3)
-plotter.orbit_on_path(path, write_frames=True)
-plotter.close()
+        eg = int(eg)
+        plotter.add_points(evalues,
+                           name=chr(65 + eg),
+                           color=tab20(i),
+                           point_size=20,
+                           opacity=0.8,
+                           render_points_as_spheres=True)
+        plotter.add_point_labels(evalues[0], [chr(65 + eg)],
+                                 text_color=tab20(i),
+                                 font_size=30,
+                                 point_size=1,
+                                 render=False)
 
 print('All done!')
