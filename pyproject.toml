@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "seegloc"
+authors = [
+    {name = "Simeon Wong", email = "simeon.wong@sickkids.ca"},
+    {name = "George Ibrahim", email = "george.ibrahim@sickkids.ca"},
+]
+description = "My package description"
+readme = "README.md"
+requires-python = ">=3.7"
+keywords = ["one", "two"]
+license = {text = "MIT"}
+dependencies = [
+    "fslpy",
+    "scikit-image",
+    "pandas",
+    "numpy",
+    "pyvista",
+    "nibabel",
+    "imageio-ffmpeg",
+]
+dynamic = ["version"]
+
+[project.scripts]
+seegloc_autolabel = "seegloc.autolabel:main"
+seegloc_coreg = "seegloc.coreg:main"
+seegloc_extrapolate = "seegloc.extrapolate:main"
