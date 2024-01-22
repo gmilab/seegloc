@@ -5,10 +5,16 @@ import os.path
 import subprocess
 
 
-def fsleyes_cli(*args):
+def render(*args):
     ''' Run fsleyes CLI. '''
     fsleyes_path = os.environ.get('FSLDIR', None)
     if fsleyes_path is None:
         raise RuntimeError('FSLDIR environment variable not set.')
     fsleyes_path = os.path.join(fsleyes_path, 'bin', 'fsleyes')
-    subprocess.run([fsleyes_path] + list(args))
+
+    if len(args) == 1 and isinstance(args[0], list):
+        args = args[0]
+
+    cmd = [fsleyes_path, 'render']
+    cmd.extend(args)
+    subprocess.run(cmd)
