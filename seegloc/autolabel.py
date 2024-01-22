@@ -103,7 +103,8 @@ def main():
         np.array(r['centroid']).astype(int))] > 0,
                                           axis=1)
 
-    ct_elecs.to_csv(args.coreg_folder + '/debug_electrodes.csv', index=False)
+    ct_elecs.to_csv(args.coreg_folder + '/debug_suprathresholdclusters.csv',
+                    index=False)
 
     # cluster contacts by electrode
     brain_center = np.array(ct_nifti.shape) / 2
