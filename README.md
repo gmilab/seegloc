@@ -12,7 +12,7 @@ Automatically mark electrode contacts in post-insertion CT imaging, roughly clus
 
 ## Installation
 - requires FMRIB Software Library (FSL)
-- requires X Windows System with OpenGL (run in VNC or in Desktop)
+- requires X Windows System with OpenGL (eg. direct desktop access or VirtualGL headless)
 
 ``` bash
 pip install git+https://github.com/gmilab/seegloc
