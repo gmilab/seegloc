@@ -4,11 +4,6 @@ Ibrahim Lab @ SickKids
 
 Automatically mark electrode contacts in post-insertion CT imaging, roughly cluster into electrodes, then warp coordinates into standard MNI space.  
 
-## Algorithms
-- scipy label / regionprops for contact identification
-- custom code for electrode clustering
-- fsl flirt (linear coregistration) of CT <=> Subject MRI
-- fsl fnirt (non-linear coregistration) of Subject MRI <=> MNI152 template
 
 ## Installation
 - requires FMRIB Software Library (FSL)
@@ -23,6 +18,8 @@ pip install git+https://github.com/gmilab/seegloc
 seegloc_coreg /path/to/ct.nii.gz /path/to/mri.nii.gz /path/to/subject/coreg_output_dir
 seegloc_autolabel /path/to/subject/coreg_output_dir
 ```
+
+Additional examples available in [/examples](./examples).
 
 ## Outputs
 
@@ -53,3 +50,9 @@ In this case:
 ```bash
 seegloc_extrapolate [spacing in mm] [number of contacts] [tip_x] [tip_y] [tip_z] [other_x] [other_y] [other_z] --coreg /path/to/subject/coreg_output_dir
 ```
+
+## Algorithms
+- scipy label / regionprops for contact identification
+- custom code for electrode clustering
+- fsl flirt (linear coregistration) of CT <=> Subject MRI
+- fsl fnirt (non-linear coregistration) of Subject MRI <=> MNI152 template
