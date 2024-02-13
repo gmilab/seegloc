@@ -138,7 +138,7 @@ def main():
             ))
 
     print('Computing brain surface mesh...')
-    grid = pv.UniformGrid(
+    grid = pv.ImageData(
         dimensions=brainmask_data.shape,
         spacing=brainmask_nifti.header.get_zooms()[:3],
         origin=brainmask_nifti.affine[:3, 3],
@@ -216,9 +216,6 @@ def main():
             maximal_electrodes = [(i, electrodes_remaining[i])
                                   for i, n in enumerate(n_contacts)
                                   if n == n_contacts[n_contacts_max_idx]]
-            # dists = [
-            #     np.linalg.norm(p - brain_center) for pi, p in maximal_electrodes
-            # ]
             dists = [dist_to_scalp(p) for pi, p in maximal_electrodes]
             end_electrode_idx = maximal_electrodes[np.argmax(dists)][0]
         else:
@@ -349,10 +346,6 @@ def main():
         os.path.join(args.coreg_folder,
                      'qcvol_electrodes_marked_in_MNI.nii.gz'))
 
-    # clean up temp files to reduce confusion
-    os.remove(os.path.join(args.coreg_folder, 'temp_electrodes_CT.txt'))
-    os.remove(os.path.join(args.coreg_folder, 'temp_electrodes_MNI.txt'))
-
     ######## PLOTTING ########
     print('Plotting on CT...')
 
@@ -432,10 +425,6 @@ def warpcoords_ct_to_MNI(coords: Union[np.ndarray, pd.DataFrame],
     if isinstance(coords, pd.DataFrame):
         coords = coords[['x', 'y', 'z']].to_numpy()
 
-    # np.savetxt(os.path.join(coreg_folder, 'temp_electrodes_CT.txt'),
-    #            coords,
-    #            delimiter='\t')
-
     if ct_path is None:
         with open(os.path.join(coreg_folder, 'coregister_meta.json'),
                   'r') as f:
@@ -456,14 +445,7 @@ def warpcoords_ct_to_MNI(coords: Union[np.ndarray, pd.DataFrame],
     np.savetxt(p.stdin, coords, delimiter='\t')
     p.stdin.close()
 
-    # loctable_mni = np.loadtxt(os.path.join(coreg_folder,
-    #                                        'temp_electrodes_MNI.txt'),
-    #                           skiprows=1)
     loctable_mni = np.loadtxt(p.stdout, skiprows=1)
-
-    # clean up
-    # os.remove(os.path.join(coreg_folder, 'temp_electrodes_CT.txt'))
-    # os.remove(os.path.join(coreg_folder, 'temp_electrodes_MNI.txt'))
 
     return loctable_mni
 
