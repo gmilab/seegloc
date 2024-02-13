@@ -48,7 +48,10 @@ In this case:
     1. Any other point along the trajectory
 1. Run the `seegloc_extrapolate` command:
 ```bash
-seegloc_extrapolate [spacing in mm] [number of contacts] [tip_x] [tip_y] [tip_z] [other_x] [other_y] [other_z] --coreg /path/to/subject/coreg_output_dir
+seegloc_extrapolate [spacing in mm] [number of contacts] \
+                    [tip_x] [tip_y] [tip_z] \
+                    [other_x] [other_y] [other_z] \
+                    --coreg /path/to/subject/coreg_output_dir
 ```
 
 ## Algorithms
