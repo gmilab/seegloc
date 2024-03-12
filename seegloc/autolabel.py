@@ -3,6 +3,8 @@ import subprocess
 import os.path
 import argparse
 import json
+import datetime
+import logging
 
 import numpy as np
 import nibabel
@@ -40,8 +42,18 @@ def main():
                         default=5.0,
                         help='Brain mask dilation radius (mm)',
                         type=float)
+    parser.add_argument('--silent',
+                        '-s',
+                        help='Hide info messages.',
+                        action='store_true')
 
     args = parser.parse_args()
+
+    if not args.silent:
+        logging.basicConfig(level=logging.INFO)
+
+    # set logging name
+    logging.getLogger().name = 'seegloc.autolabel'
 
     # try initializing a pyvista plotter to make sure we have a valid OpenGL context
     try:
@@ -56,16 +68,18 @@ def main():
         )('Could not initialize OpenGL context. Make sure you are running this script with vglrun or from a desktop environment.'
           )
 
+    t1 = datetime.datetime.now()
+
     with open(args.coreg_folder + '/coregister_meta.json', 'r') as f:
         coreg_meta = json.load(f)
 
     # load ct image
-    print('Loading CT image...')
+    logging.info('Loading CT image...')
     ct_nifti = nibabel.load(coreg_meta['src_ct'])
     ct_data = ct_nifti.get_fdata()
 
     # get electrode locations
-    print('Detecting electrodes...')
+    logging.info('Detecting electrodes...')
     ct_label = skimage.measure.label(ct_data > args.threshold)
     ct_props = skimage.measure.regionprops(ct_label)
 
@@ -137,7 +151,7 @@ def main():
                 nibabel.affines.apply_affine(ct_nifti.affine, p2),
             ))
 
-    print('Computing brain surface mesh...')
+    logging.info('Computing brain surface mesh...')
     grid = pv.ImageData(
         dimensions=brainmask_data.shape,
         spacing=brainmask_nifti.header.get_zooms()[:3],
@@ -158,7 +172,7 @@ def main():
                 scalp_points,
                 axis=0))
 
-    print('Clustering electrodes...')
+    logging.info('Clustering electrodes...')
     electrode_groups = []
     electrode_groups_dist = []
     while electrodes_remaining:
@@ -262,7 +276,7 @@ def main():
                            index=False)
 
     # warp coordinates into MNI space and plot on template brain
-    print('Warping coordinates to MNI space...')
+    logging.info('Warping coordinates to MNI space...')
     loctable_mni = warpcoords_ct_to_MNI(loctable[['x', 'y', 'z']].to_numpy(),
                                         args.coreg_folder,
                                         ct_path=coreg_meta['src_ct'])
@@ -271,7 +285,7 @@ def main():
     loctable_mni['enumber'] = loctable['enumber']
 
     # lookup AAL regions
-    print('Looking up AAL regions...')
+    logging.info('Looking up AAL regions...')
     loctable_mni['aal'] = ''
     for i, row in loctable_mni.iterrows():
         loctable_mni.loc[i, 'aal'] = lookup_aal_region(row[['x', 'y',
@@ -320,7 +334,8 @@ def main():
                                    index=False)
 
     # write out electrode locations in MNI space to nifti file
-    print('Writing electrode locations into a NIFTI file in MNI space...')
+    logging.info(
+        'Writing electrode locations into a NIFTI file in MNI space...')
     template_nifti = nibabel.load(
         '/usr/local/fsl/data/standard/MNI152_T1_1mm_brain.nii.gz')
     electrode_nifti = np.zeros(template_nifti.shape)
@@ -347,7 +362,7 @@ def main():
                      'qcvol_electrodes_marked_in_MNI.nii.gz'))
 
     ######## PLOTTING ########
-    print('Plotting on CT...')
+    logging.info('Plotting on CT...')
 
     # clip CT data for plotting
     ct_data = np.clip(ct_data, 0, args.threshold)
@@ -377,7 +392,7 @@ def main():
                                      render=False)
 
     # plot on template brain
-    print('Plotting on template...')
+    logging.info('Plotting on template...')
     template_nifti = nibabel.load(
         '/usr/local/fsl/data/standard/MNI152_T1_1mm_brain.nii.gz')
     template_data = template_nifti.get_fdata()
@@ -415,7 +430,9 @@ def main():
                                      point_size=1,
                                      render=False)
 
-    print('All done!')
+    logging.info(
+        f'Electrode labelling completed in {(datetime.datetime.now() - t1).total_seconds()} s.'
+    )
 
 
 def warpcoords_ct_to_MNI(coords: Union[np.ndarray, pd.DataFrame],

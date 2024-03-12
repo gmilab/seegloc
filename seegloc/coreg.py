@@ -1,6 +1,7 @@
 import os
 import argparse
 import logging
+import datetime
 
 from fsl.wrappers import flirt, fnirt, bet, applywarp, invxfm, concatxfm, applyxfm
 import json
@@ -25,13 +26,14 @@ def main():
     parser.add_argument('coreg_output',
                         help='Path to coregistration output directory',
                         type=str)
-    parser.add_argument('--silent',
-                        help='Silence logging',
+    parser.add_argument('--silent', '-s',
+                        help='Hide info messages.',
                         action='store_true')
     parser.add_argument(
-        '--testing',
+        '--skip-slow',
+        dest='testing',
         help=
-        'Run in testing / debug mode. Skip slow steps that look already done.',
+        'Skip time-consuming steps where output already exists. Useful for troubleshooting later steps.',
         action='store_true')
 
     args = parser.parse_args()
@@ -41,6 +43,8 @@ def main():
 
     # set logging name
     logging.getLogger().name = 'seegloc.coreg'
+
+    t1 = datetime.datetime.now()
 
     # make output directory
     if not os.path.exists(args.coreg_output):
@@ -221,6 +225,10 @@ def main():
         crd('vol_CT_inMRIspace.nii.gz'), '--overlayType', 'volume', '--alpha',
         '100', '--cmap', 'red', '--displayRange', '180.0', '2000.0'
     ])
+
+    logging.info(
+        f'Coregistration completed in {(datetime.datetime.now() - t1).total_seconds()} s'
+    )
 
 
 if __name__ == '__main__':
