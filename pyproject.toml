@@ -1,6 +1,9 @@
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.package-data]
+seegloc = ["seegloc/atlases/*"]
 
 [project]
 name = "seegloc"
@@ -24,7 +27,10 @@ dependencies = [
 ]
 dynamic = ["version"]
 
+[tool.setuptools_scm]
+
 [project.scripts]
 seegloc_autolabel = "seegloc.autolabel:main"
-seegloc_coreg = "seegloc.coreg:main"
 seegloc_extrapolate = "seegloc.extrapolate:main"
+seegloc_coreg = "seegloc.coreg:pipeline_full"
+seegloc_genqc = "seegloc.coreg:pipeline_qconly"
