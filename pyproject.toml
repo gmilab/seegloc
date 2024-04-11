@@ -24,6 +24,7 @@ dependencies = [
     "pyvista",
     "nibabel",
     "imageio-ffmpeg",
+    "tqdm",
 ]
 dynamic = ["version"]
 
