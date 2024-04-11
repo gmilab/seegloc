@@ -51,7 +51,7 @@ def main():
     # print trajectory in template space
     if args.coreg:
         print('\n' * 3 + '... warping to MNI space ...' + '\n' * 2)
-        from .autolabel import warpcoords_ct_to_MNI
+        from .coreg import warpcoords_ct_to_MNI
         from .fuzzyquery_aal import lookup_aal_region
 
         # transform trajectory to template space

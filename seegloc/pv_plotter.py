@@ -72,7 +72,7 @@ def get_plotter(
         z_range = z_bounds[1] - z_bounds[0]
 
         # path
-        steps = np.arange(0, 360, 4)
+        steps = np.arange(0, 360, 2)
         path = [
             np.vstack((cam_dist * np.cos(np.deg2rad(steps)),
                        cam_dist * np.sin(np.deg2rad(steps)),
