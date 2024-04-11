@@ -19,7 +19,11 @@ seegloc_coreg /path/to/ct.nii.gz /path/to/mri.nii.gz /path/to/subject/coreg_outp
 seegloc_autolabel /path/to/subject/coreg_output_dir
 ```
 
-Additional examples available in [/examples](./examples).
+If this code has been useful in your work, please cite:
+```
+Wong SM, Arski ON, Ibrahim GM. An automated algorithm for stereoelectroencephalography electrode localization and labelling. Seizure: European Journal of Epilepsy. 2024;117:293-297. doi:10.1016/j.seizure.2024.04.002
+```
+
 
 ## Outputs
 
