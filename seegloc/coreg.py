@@ -2,7 +2,7 @@ import os
 import argparse
 import logging
 import datetime
-from typing import Optional, Union
+from typing import Optional, Union, Literal
 
 import numpy as np
 import pandas as pd
@@ -392,7 +392,8 @@ def warpcoords_ct_to_MNI(coords: Union[np.ndarray, pd.DataFrame],
 
 
 def fsl_img2imgcoord(coords: Union[np.ndarray, pd.DataFrame],
-                     coreg_folder: str):
+                     coreg_folder: str,
+                     direction: Literal['CTtoMNI', 'MNItoCT'] = 'CTtoMNI'):
     import subprocess
 
     with open(os.path.join(coreg_folder, 'coregister_meta.json'), 'r') as f:
@@ -405,15 +406,33 @@ def fsl_img2imgcoord(coords: Union[np.ndarray, pd.DataFrame],
         raise ValueError(
             'Coordinates must be a numpy array or pandas DataFrame')
 
+    args = []
+    if direction == 'CTtoMNI':
+        args = [
+            '-src',
+            ct_path,
+            '-dest',
+            "/usr/local/fsl/data/standard/MNI152_T1_1mm.nii.gz",
+            '-premat',
+            os.path.join(coreg_folder, 'transform_CTtoMRI_affine.mat'),
+            '-mm',
+            '-warp',
+            os.path.join(coreg_folder, 'transform_MRItoTemplate_fnirt.nii.gz'),
+        ]
+    elif direction == 'MNItoCT':
+        args = [
+            '-src',
+            "/usr/local/fsl/data/standard/MNI152_T1_1mm.nii.gz",
+            '-dest',
+            ct_path,
+            '-xfm',
+            os.path.join(coreg_folder, 'transform_TemplatetoCT_affine.mat'),
+            '-mm',
+        ]
+
     fsl_path = os.environ.get('FSLDIR', None)
-    p = subprocess.Popen([
-        os.path.join(fsl_path, 'bin',
-                     'img2imgcoord'), '-src', ct_path, '-dest',
-        "/usr/local/fsl/data/standard/MNI152_T1_1mm.nii.gz", '-premat',
-        os.path.join(coreg_folder,
-                     'transform_CTtoMRI_affine.mat'), '-mm', '-warp',
-        os.path.join(coreg_folder, 'transform_MRItoTemplate_fnirt.nii.gz')
-    ],
+    p = subprocess.Popen([os.path.join(fsl_path, 'bin', 'img2imgcoord')] +
+                         args,
                          stdin=subprocess.PIPE,
                          stdout=subprocess.PIPE)
     np.savetxt(p.stdin, coords, delimiter='\t')
