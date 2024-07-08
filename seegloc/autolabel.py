@@ -102,14 +102,22 @@ def main():
     ct_nifti = nibabel.load(coreg_meta['src_ct'])
 
     if not args.only_plot:
-        loctable, loctable_mni = get_electrode_clusters(ct_nifti, args)
+        loctable, loctable_mni, trajectories = get_electrode_clusters(
+            ct_nifti, args)
     else:
         loctable = pd.read_csv(args.coreg_folder + '/electrodes_CT.csv')
         loctable_mni = pd.read_csv(args.coreg_folder + '/electrodes_MNI.csv')
 
+        # load trajectories if it exists
+        if os.path.exists(args.coreg_folder + '/trajectories_CT.csv'):
+            trajectories = pd.read_csv(args.coreg_folder +
+                                       '/trajectories_CT.csv')
+        else:
+            trajectories = None
+
     if not args.only_coreg:
         # plot on CT
-        plot_on_vol(ct_nifti, loctable, args)
+        plot_on_vol(ct_nifti, loctable, args, trajectories)
 
         # plot on template
         plot_on_template(loctable_mni, args)
@@ -117,6 +125,40 @@ def main():
     logging.info(
         f'Electrode labelling completed in {(datetime.datetime.now() - t1).total_seconds()} s.'
     )
+
+
+def get_orientation_and_endpoints(prop):
+    # Compute the inertia tensor using second central moments
+    inertia_tensor = prop.inertia_tensor
+    eigenvalues, eigenvectors = np.linalg.eig(inertia_tensor)
+
+    # Principal axis is the eigenvector corresponding to the smallest eigenvalue
+    min_eig = np.argmin(eigenvalues)
+    traj_diameter = eigenvalues[min_eig]
+
+    principal_axis = eigenvectors[:, min_eig]
+    principal_axis = principal_axis / np.linalg.norm(principal_axis)
+    centroid = np.array(prop.centroid)
+
+    # Project all coordinates onto the principal axis
+    coords = prop.coords
+    projections = np.dot(coords - centroid, principal_axis)
+    min_proj, max_proj = projections.min(), projections.max()
+
+    # Calculate endpoints along the principal axis
+    end1 = centroid + principal_axis * max_proj - principal_axis * traj_diameter
+    end2 = centroid + principal_axis * min_proj - principal_axis * traj_diameter
+
+    return end1, end2
+
+
+def is_traj(prop, mean_vx_size, args):
+    try:
+        return ((prop.axis_major_length * mean_vx_size)
+                > args.trajectory_length_min) & (
+                    (prop.axis_minor_length * mean_vx_size) < 5)
+    except:
+        return False
 
 
 def get_electrode_clusters(
@@ -150,28 +192,58 @@ def get_electrode_clusters(
     brainmask_data = brainmask_nifti.get_fdata()
 
     # dilate
+    logging.info('Dilating mesh...')
     dilate_vx = (args.dilation /
                  np.array(ct_nifti.header.get_zooms()[:3])).astype(int)
-    brainmask_data = skimage.morphology.binary_dilation(
+    brainmask_data_dilated = skimage.morphology.binary_dilation(
         brainmask_data,
         footprint=[(np.ones((dilate_vx[0], 1, 1)), 1),
                    (np.ones((1, dilate_vx[1], 1)), 1),
                    (np.ones((1, 1, dilate_vx[2])), 1)])
 
-    # filter out blobs that are outside the brain
-    ct_elecs['in_brain'] = ct_elecs.apply(lambda r: brainmask_data[tuple(
-        np.array(r['centroid']).astype(int))] > 0,
-                                          axis=1)
+    logging.info('Computing brain surface mesh...')
+    t1 = datetime.datetime.now()
+    verts, faces, normals, values = skimage.measure.marching_cubes(
+        brainmask_data_dilated, level=0)
+    faces_pv = np.hstack([np.ones((faces.shape[0], 1)) * 3,
+                          faces]).flatten().astype(int)
+    mesh = pv.PolyData(verts, faces_pv, faces.shape[0])
+    logging.debug(
+        f'Computed initial mesh in {(datetime.datetime.now() - t1).total_seconds():.3f} s.'
+    )
 
-    ct_elecs.to_csv(args.coreg_folder + '/debug_suprathresholdclusters.csv',
-                    index=False)
+    t1 = datetime.datetime.now()
+    mesh = mesh.smooth(n_iter=100, relaxation_factor=0.1)
+    logging.debug(
+        f'Smoothed mesh in {(datetime.datetime.now() - t1).total_seconds():.3f} s.'
+    )
 
-    # cluster contacts by electrode
-    brain_center = np.array(ct_nifti.shape) / 2
-    electrodes_remaining = ct_elecs.loc[ct_elecs['in_brain']
-                                        & ct_elecs['size_ok'],
-                                        'centroid'].tolist()
+    t1 = datetime.datetime.now()
+    mesh = mesh.clean()
+    logging.debug(
+        f'Cleaned mesh in {(datetime.datetime.now() - t1).total_seconds():.3f} s.'
+    )
 
+    t1 = datetime.datetime.now()
+    mesh = mesh.triangulate()
+    logging.debug(
+        f'Triangulated mesh in {(datetime.datetime.now() - t1).total_seconds():.3f} s.'
+    )
+
+    t1 = datetime.datetime.now()
+    mesh = mesh.decimate(0.9)
+    logging.debug(
+        f'Decimated mesh in {(datetime.datetime.now() - t1).total_seconds():.3f} s.'
+    )
+
+    scalp_points = nibabel.affines.apply_affine(ct_nifti.affine, mesh.points).T
+
+    # remove skull base from scalp_points
+    base_coords = fsl_img2imgcoord(np.array([0, 0, -35]), args.coreg_folder,
+                                   'MNItoCT')
+    scalp_points = scalp_points[:, scalp_points[2] > base_coords[2]]
+
+    # define helper functions using available geometry
     def dist_line(lp1, lp2, p):
         ''' 
         distance between point p and line between lp1 and lp2 in voxels 
@@ -184,6 +256,9 @@ def get_electrode_clusters(
         See https://mathworld.wolfram.com/Point-LineDistance3-Dimensional.html
         
         '''
+        lp1 = nibabel.affines.apply_affine(ct_nifti.affine, lp1)
+        lp2 = nibabel.affines.apply_affine(ct_nifti.affine, lp2)
+        p = nibabel.affines.apply_affine(ct_nifti.affine, p)
 
         return np.linalg.norm(
             np.cross(np.subtract(lp2, lp1), np.subtract(
@@ -197,26 +272,67 @@ def get_electrode_clusters(
                 nibabel.affines.apply_affine(ct_nifti.affine, p2),
             ))
 
-    logging.info('Computing brain surface mesh...')
-    grid = pv.ImageData(
-        dimensions=brainmask_data.shape,
-        spacing=brainmask_nifti.header.get_zooms()[:3],
-        origin=brainmask_nifti.affine[:3, 3],
-    )
-    mesh = grid.contour([0.5],
-                        scalars=(brainmask_data > 0).flatten('F'),
-                        method='marching_cubes')
-    mesh = mesh.smooth(n_iter=200,
-                       relaxation_factor=0.1).clean().decimate(0.95)
-    scalp_points = mesh.points.T
-
     def dist_to_scalp(p):
         ''' distance to scalp mesh in mm '''
         return np.amin(
             np.linalg.norm(
                 nibabel.affines.apply_affine(ct_nifti.affine, p)[:, None] -
                 scalp_points,
+                # p[:,None] - scalp_points,
                 axis=0))
+
+    # voxel size
+    dim_scales = np.diag(ct_nifti.affine)[:3]
+    if np.ptp(np.abs(dim_scales)) / np.mean(np.abs(dim_scales)) > 0.05:
+        logging.warning('CT image has anisotropic voxels.')
+    mean_vx_size = np.mean(np.abs(dim_scales))
+
+    # filter out blobs that are outside the brain
+    ct_elecs['in_brain'] = ct_elecs.apply(lambda r: brainmask_data_dilated[
+        tuple(np.array(r['centroid']).astype(int))] > 0,
+                                          axis=1)
+
+    ct_elecs.to_csv(args.coreg_folder + '/debug_suprathresholdclusters.csv',
+                    index=False)
+
+    ### filter list of putative trajectories without individually resolvable electrodes
+    logging.info('Detecting unresolvable trajectories...')
+    trajectories_list = list(
+        filter(lambda x: is_traj(x, mean_vx_size, args), ct_props))
+    trajectories = pd.DataFrame(
+        [(p.centroid, p.axis_major_length * mean_vx_size) +
+         get_orientation_and_endpoints(p) for p in trajectories_list],
+        columns=['centroid', 'length_mm', 'end1', 'end2'])
+    trajectories['end1_scalp'] = trajectories['end1'].apply(dist_to_scalp)
+    trajectories['end2_scalp'] = trajectories['end2'].apply(dist_to_scalp)
+    trajectories['end'] = trajectories.apply(
+        lambda r: r['end1']
+        if r['end1_scalp'] > r['end2_scalp'] else r['end2'],
+        axis=1)
+
+    # convert centroid and end to mm
+    trajectories['centroid'] = trajectories['centroid'].apply(
+        lambda x: nibabel.affines.apply_affine(ct_nifti.affine, x))
+    trajectories['end'] = trajectories['end'].apply(
+        lambda x: nibabel.affines.apply_affine(ct_nifti.affine, x))
+
+    # split tuple into 3 columns
+    trajectories[['centroid_x', 'centroid_y',
+                  'centroid_z']] = trajectories['centroid'].apply(pd.Series)
+    trajectories[['end_x', 'end_y',
+                  'end_z']] = trajectories['end'].apply(pd.Series)
+
+    trajectories = trajectories[[
+        'end_x', 'end_y', 'end_z', 'centroid_x', 'centroid_y', 'centroid_z',
+        'length_mm'
+    ]].copy()
+    trajectories.to_csv(args.coreg_folder + '/trajectories_CT.csv',
+                        index=False)
+
+    # cluster contacts by electrode
+    electrodes_remaining = ct_elecs.loc[ct_elecs['in_brain']
+                                        & ct_elecs['size_ok'],
+                                        'centroid'].tolist()
 
     logging.info('Clustering electrodes...')
     electrode_groups = []
@@ -378,10 +494,10 @@ def get_electrode_clusters(
                                                 'electrodes_MNI.csv'),
                                    index=False)
 
-    return loctable, loctable_mni
+    return loctable, loctable_mni, trajectories
 
 
-def plot_on_vol(ct_nifti, loctable, args):
+def plot_on_vol(ct_nifti, loctable, args, trajectories=None):
     ######## PLOTTING ########
     logging.info('Plotting on CT...')
 
@@ -389,6 +505,7 @@ def plot_on_vol(ct_nifti, loctable, args):
     ct_data = ct_nifti.get_fdata()
     ct_data = np.clip(ct_data, 0, args.threshold)
     tab20 = plt.get_cmap('tab20')
+    set2 = plt.get_cmap('Set2')
 
     user_matrix = ct_nifti.affine
 
@@ -426,6 +543,25 @@ def plot_on_vol(ct_nifti, loctable, args):
                 point_size=1,
                 render=False,
             )
+
+        if trajectories is not None:
+            for i, row in trajectories.iterrows():
+                # extend the point 2x past centroid
+                centroid = row[['centroid_x', 'centroid_y',
+                                'centroid_z']].to_numpy()
+                tip = row[['end_x', 'end_y', 'end_z']].to_numpy()
+                further_point = centroid + (centroid - tip)
+                plotter.add_lines(np.vstack((further_point, tip)),
+                                  color=set2(i),
+                                  width=5)
+                plotter.add_point_labels(
+                    [further_point],
+                    [f'T{row.name}'],
+                    text_color=set2(i),
+                    font_size=30,
+                    point_size=0.1,
+                    render=False,
+                )
 
 
 def plot_on_template(loctable_mni, args):
