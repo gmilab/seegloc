@@ -3,7 +3,9 @@ import argparse
 import logging
 import datetime
 import json
-from typing import Optional
+from typing import Optional, Union, Literal
+import numpy as np
+import pandas as pd
 
 FSLDIR = os.environ['FSLDIR']
 
@@ -45,9 +47,8 @@ def pipeline_full():
     if not os.path.exists(args.coreg_output):
         os.makedirs(args.coreg_output)
 
-
     coreg_fsl(args.subject_mri, args.subject_ct, args.coreg_output,
-                  args.run_step)
+              args.run_step)
 
     # write json file with source filenames
     with open(os.path.join(args.coreg_output, 'coregister_meta.json'),
@@ -249,6 +250,63 @@ def generate_qc(subject_mri: str, coreg_output: str):
         crd('vol_CT_inMRIspace.nii.gz'), '--overlayType', 'volume', '--alpha',
         '100', '--cmap', 'red', '--displayRange', '180.0', '2000.0'
     ])
+
+
+def fsl_img2imgcoord(coords: Union[np.ndarray, pd.DataFrame],
+                     coreg_folder: str,
+                     direction: Literal['CTtoMNI', 'MNItoCT'] = 'CTtoMNI'):
+    import subprocess
+
+    with open(os.path.join(coreg_folder, 'coregister_meta.json'), 'r') as f:
+        coreg_meta = json.load(f)
+    ct_path = coreg_meta['src_ct']
+
+    if isinstance(coords, pd.DataFrame):
+        coords = coords[['x', 'y', 'z']].to_numpy()
+    elif not isinstance(coords, np.ndarray):
+        raise ValueError(
+            'Coordinates must be a numpy array or pandas DataFrame')
+
+    args = []
+    if direction == 'CTtoMNI':
+        args = [
+            '-src',
+            ct_path,
+            '-dest',
+            "/usr/local/fsl/data/standard/MNI152_T1_1mm.nii.gz",
+            '-premat',
+            os.path.join(coreg_folder, 'transform_CTtoMRI_affine.mat'),
+            '-mm',
+            '-warp',
+            os.path.join(coreg_folder, 'transform_MRItoTemplate_fnirt.nii.gz'),
+        ]
+    elif direction == 'MNItoCT':
+        args = [
+            '-src',
+            "/usr/local/fsl/data/standard/MNI152_T1_1mm.nii.gz",
+            '-dest',
+            ct_path,
+            '-xfm',
+            os.path.join(coreg_folder, 'transform_TemplatetoCT_affine.mat'),
+            '-mm',
+        ]
+
+    fsl_path = os.environ.get('FSLDIR', None)
+    p = subprocess.Popen([os.path.join(fsl_path, 'bin', 'img2imgcoord')] +
+                         args,
+                         stdin=subprocess.PIPE,
+                         stdout=subprocess.PIPE)
+    np.savetxt(p.stdin, coords, delimiter='\t')
+    p.stdin.close()
+
+    loctable_mni = np.loadtxt(p.stdout, skiprows=1)
+
+    return loctable_mni
+
+
+def warpcoords_ct_to_MNI(coords: Union[np.ndarray, pd.DataFrame],
+                         coreg_folder: str):
+    return fsl_img2imgcoord(coords, coreg_folder, 'CTtoMNI')
 
 
 if __name__ == '__main__':

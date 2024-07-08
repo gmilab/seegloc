@@ -1,10 +1,11 @@
-from typing import Union, Optional
+from typing import Optional, Tuple
 import subprocess
 import os.path
 import argparse
 import json
 import datetime
 import logging
+import re
 
 import numpy as np
 import nibabel
@@ -15,6 +16,7 @@ import pandas as pd
 
 from .pv_plotter import get_plotter
 from .fuzzyquery_aal import lookup_aal_region
+from .coreg import warpcoords_ct_to_MNI, fsl_img2imgcoord
 
 
 def main():
@@ -42,40 +44,84 @@ def main():
                         default=5.0,
                         help='Brain mask dilation radius (mm)',
                         type=float)
-    parser.add_argument('--silent',
-                        '-s',
-                        help='Hide info messages.',
-                        action='store_true')
+    parser.add_argument(
+        '--silent',
+        '-s',
+        help='Hide info messages.',
+        action='store_true',
+    )
+    parser.add_argument(
+        '--only_coreg',
+        '-oc',
+        help='Only perform coregistration, do not plot the electrodes.',
+        action='store_true',
+    )
+    parser.add_argument(
+        '--only_plot',
+        '-op',
+        help='Only plot the electrodes, do not compute clusters.',
+        action='store_true',
+    )
+    parser.add_argument(
+        '--verbose',
+        '-v',
+        help='Show debug messages.',
+        action='store_true',
+    )
 
     args = parser.parse_args()
 
-    if not args.silent:
+    if args.verbose:
+        logging.basicConfig(level=logging.DEBUG)
+    elif not args.silent:
         logging.basicConfig(level=logging.INFO)
 
     # set logging name
     logging.getLogger().name = 'seegloc.autolabel'
 
-    # try initializing a pyvista plotter to make sure we have a valid OpenGL context
-    try:
-        plotter = pv.Plotter(off_screen=True)
-        plotter.show(auto_close=False)
-        plotter.screenshot()
-        plotter.close()
-
-    except:
-        raise (
-            RuntimeError
-        )('Could not initialize OpenGL context. Make sure you are running this script with vglrun or from a desktop environment.'
-          )
-
     t1 = datetime.datetime.now()
+
+    if not args.only_coreg:
+        # try initializing a pyvista plotter to make sure we have a valid OpenGL context
+        try:
+            plotter = pv.Plotter(off_screen=True)
+            plotter.show(auto_close=False)
+            plotter.screenshot()
+            plotter.close()
+
+        except:
+            raise (
+                RuntimeError
+            )('Could not initialize OpenGL context. Make sure you are running this script with vglrun or from a desktop environment.'
+              )
 
     with open(args.coreg_folder + '/coregister_meta.json', 'r') as f:
         coreg_meta = json.load(f)
 
-    # load ct image
     logging.info('Loading CT image...')
     ct_nifti = nibabel.load(coreg_meta['src_ct'])
+
+    if not args.only_plot:
+        loctable, loctable_mni = get_electrode_clusters(ct_nifti, args)
+    else:
+        loctable = pd.read_csv(args.coreg_folder + '/electrodes_CT.csv')
+        loctable_mni = pd.read_csv(args.coreg_folder + '/electrodes_MNI.csv')
+
+    if not args.only_coreg:
+        # plot on CT
+        plot_on_vol(ct_nifti, loctable, args)
+
+        # plot on template
+        plot_on_template(loctable_mni, args)
+
+    logging.info(
+        f'Electrode labelling completed in {(datetime.datetime.now() - t1).total_seconds()} s.'
+    )
+
+
+def get_electrode_clusters(
+        ct_nifti: nibabel.Nifti1Image,
+        args: argparse.Namespace) -> Tuple[pd.DataFrame, pd.DataFrame]:
     ct_data = ct_nifti.get_fdata()
 
     # get electrode locations
@@ -278,8 +324,7 @@ def main():
     # warp coordinates into MNI space and plot on template brain
     logging.info('Warping coordinates to MNI space...')
     loctable_mni = warpcoords_ct_to_MNI(loctable[['x', 'y', 'z']].to_numpy(),
-                                        args.coreg_folder,
-                                        ct_path=coreg_meta['src_ct'])
+                                        args.coreg_folder)
     loctable_mni = pd.DataFrame(loctable_mni, columns=['x', 'y', 'z'])
     loctable_mni['ename'] = loctable['ename']
     loctable_mni['enumber'] = loctable['enumber']
@@ -333,40 +378,23 @@ def main():
                                                 'electrodes_MNI.csv'),
                                    index=False)
 
-    # write out electrode locations in MNI space to nifti file
-    logging.info(
-        'Writing electrode locations into a NIFTI file in MNI space...')
-    template_nifti = nibabel.load(
-        '/usr/local/fsl/data/standard/MNI152_T1_1mm_brain.nii.gz')
-    electrode_nifti = np.zeros(template_nifti.shape)
+    return loctable, loctable_mni
 
-    # write coordinates to nifti
-    n_side = 1
-    mm_to_vox = np.linalg.inv(template_nifti.affine)
-    for i, row in loctable_mni.iterrows():
-        eg = row['enumber']
 
-        # convert to voxel space
-        x, y, z = nibabel.affines.apply_affine(mm_to_vox,
-                                               row[['x', 'y',
-                                                    'z']].values).astype(int)
-
-        electrode_nifti[x - n_side:x + n_side + 1, y - n_side:y + n_side + 1,
-                        z - n_side:z + n_side + 1] = eg + 1
-
-    # save nifti
-    nibabel.save(
-        nibabel.Nifti1Image(electrode_nifti, template_nifti.affine,
-                            template_nifti.header),
-        os.path.join(args.coreg_folder,
-                     'qcvol_electrodes_marked_in_MNI.nii.gz'))
-
+def plot_on_vol(ct_nifti, loctable, args):
     ######## PLOTTING ########
     logging.info('Plotting on CT...')
 
     # clip CT data for plotting
+    ct_data = ct_nifti.get_fdata()
     ct_data = np.clip(ct_data, 0, args.threshold)
     tab20 = plt.get_cmap('tab20')
+
+    user_matrix = ct_nifti.affine
+
+    loctable['eroot'] = loctable['ename'].apply(
+        lambda x: re.match(r'([A-Z]+)', x).group(1))
+    eroots = loctable['eroot'].unique()
 
     with get_plotter(os.path.join(args.coreg_folder,
                                   'vis_electrodes_CT')) as plotter:
@@ -376,20 +404,33 @@ def main():
             opacity=[0.0, 0.2, 0.07],
             cmap='bone',
             clim=[1000, args.threshold],
+            user_matrix=user_matrix,
         )
 
-        for i, eg in enumerate(electrode_groups):
-            plotter.add_points(np.vstack(eg),
-                               name=chr(65 + i),
-                               color=tab20(i),
-                               point_size=20,
-                               opacity=0.8,
-                               render_points_as_spheres=True)
-            plotter.add_point_labels((eg[0]), [chr(65 + i)],
-                                     text_color=tab20(i),
-                                     font_size=30,
-                                     point_size=1,
-                                     render=False)
+        for i, eroot in enumerate(eroots):
+            eg = loctable[loctable['eroot'] == eroot][['x', 'y', 'z']].values
+
+            plotter.add_points(
+                np.vstack(eg),
+                name=eroot,
+                color=tab20(i),
+                point_size=20,
+                opacity=0.8,
+                render_points_as_spheres=True,
+            )
+            plotter.add_point_labels(
+                (eg[-1]),
+                [eroot],
+                text_color=tab20(i),
+                font_size=30,
+                point_size=1,
+                render=False,
+            )
+
+
+def plot_on_template(loctable_mni, args):
+    # get tab20
+    tab20 = plt.get_cmap('tab20')
 
     # plot on template brain
     logging.info('Plotting on template...')
@@ -408,63 +449,28 @@ def main():
         )
 
         mm_to_vox = np.linalg.inv(template_nifti.affine)
-        unique_enumbers = np.unique(loctable_mni['enumber'])
-        for i, eg in enumerate(unique_enumbers):
-            evalues = loctable_mni[loctable_mni['enumber'] == eg][[
+        loctable_mni['eroot'] = loctable_mni['ename'].apply(
+            lambda x: re.match(r'([A-Z]+)', x).group(1))
+        unique_eroots = loctable_mni['eroot'].unique()
+        for i, eg in enumerate(unique_eroots):
+            evalues = loctable_mni[loctable_mni['eroot'] == eg][[
                 'x', 'y', 'z'
             ]]
 
             # convert to voxel space
             evalues = nibabel.affines.apply_affine(mm_to_vox, evalues)
 
-            eg = int(eg)
             plotter.add_points(evalues,
-                               name=chr(65 + eg),
+                               name=eg,
                                color=tab20(i),
                                point_size=20,
                                opacity=0.8,
                                render_points_as_spheres=True)
-            plotter.add_point_labels(evalues[0], [chr(65 + eg)],
+            plotter.add_point_labels(evalues[0], [eg],
                                      text_color=tab20(i),
                                      font_size=30,
                                      point_size=1,
                                      render=False)
-
-    logging.info(
-        f'Electrode labelling completed in {(datetime.datetime.now() - t1).total_seconds()} s.'
-    )
-
-
-def warpcoords_ct_to_MNI(coords: Union[np.ndarray, pd.DataFrame],
-                         coreg_folder: str,
-                         ct_path: Optional[str] = None):
-
-    if isinstance(coords, pd.DataFrame):
-        coords = coords[['x', 'y', 'z']].to_numpy()
-
-    if ct_path is None:
-        with open(os.path.join(coreg_folder, 'coregister_meta.json'),
-                  'r') as f:
-            coreg_meta = json.load(f)
-        ct_path = coreg_meta['src_ct']
-
-    fsl_path = os.environ.get('FSLDIR', None)
-    p = subprocess.Popen([
-        os.path.join(fsl_path, 'bin',
-                     'img2imgcoord'), '-src', ct_path, '-dest',
-        "/usr/local/fsl/data/standard/MNI152_T1_1mm.nii.gz", '-premat',
-        os.path.join(coreg_folder,
-                     'transform_CTtoMRI_affine.mat'), '-mm', '-warp',
-        os.path.join(coreg_folder, 'transform_MRItoTemplate_fnirt.nii.gz')
-    ],
-                         stdin=subprocess.PIPE,
-                         stdout=subprocess.PIPE)
-    np.savetxt(p.stdin, coords, delimiter='\t')
-    p.stdin.close()
-
-    loctable_mni = np.loadtxt(p.stdout, skiprows=1)
-
-    return loctable_mni
 
 
 if __name__ == '__main__':
