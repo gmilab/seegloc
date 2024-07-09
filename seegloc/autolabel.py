@@ -51,9 +51,10 @@ def main():
         action='store_true',
     )
     parser.add_argument(
-        '--only_coreg',
-        '-oc',
-        help='Only perform coregistration, do not plot the electrodes.',
+        '--only_label',
+        '-ol',
+        help=
+        'Only perform labelling and electrode clustering, do not plot the electrodes.',
         action='store_true',
     )
     parser.add_argument(
@@ -81,7 +82,7 @@ def main():
 
     t1 = datetime.datetime.now()
 
-    if not args.only_coreg:
+    if not args.only_label:
         # try initializing a pyvista plotter to make sure we have a valid OpenGL context
         try:
             plotter = pv.Plotter(off_screen=True)
@@ -92,7 +93,7 @@ def main():
         except:
             raise (
                 RuntimeError
-            )('Could not initialize OpenGL context. Make sure you are running this script with vglrun or from a desktop environment.'
+            )('Could not initialize OpenGL context for plotting. Run with --only_label or make sure you are running this script with vglrun or from a desktop environment.'
               )
 
     with open(args.coreg_folder + '/coregister_meta.json', 'r') as f:
@@ -115,7 +116,7 @@ def main():
         else:
             trajectories = None
 
-    if not args.only_coreg:
+    if not args.only_label:
         # plot on CT
         plot_on_vol(ct_nifti, loctable, args, trajectories)
 
@@ -278,7 +279,6 @@ def get_electrode_clusters(
             np.linalg.norm(
                 nibabel.affines.apply_affine(ct_nifti.affine, p)[:, None] -
                 scalp_points,
-                # p[:,None] - scalp_points,
                 axis=0))
 
     # voxel size
@@ -318,14 +318,14 @@ def get_electrode_clusters(
             lambda x: nibabel.affines.apply_affine(ct_nifti.affine, x))
 
         # split tuple into 3 columns
-        trajectories[['centroid_x', 'centroid_y',
-                    'centroid_z']] = trajectories['centroid'].apply(pd.Series)
+        trajectories[['centroid_x', 'centroid_y', 'centroid_z'
+                      ]] = trajectories['centroid'].apply(pd.Series)
         trajectories[['end_x', 'end_y',
-                    'end_z']] = trajectories['end'].apply(pd.Series)
+                      'end_z']] = trajectories['end'].apply(pd.Series)
 
         trajectories = trajectories[[
-            'end_x', 'end_y', 'end_z', 'centroid_x', 'centroid_y', 'centroid_z',
-            'length_mm'
+            'end_x', 'end_y', 'end_z', 'centroid_x', 'centroid_y',
+            'centroid_z', 'length_mm'
         ]].copy()
         trajectories.to_csv(args.coreg_folder + '/trajectories_CT.csv',
                             index=False)
@@ -362,27 +362,51 @@ def get_electrode_clusters(
                 for i, (p, d) in enumerate(zip(electrodes_remaining, dists))
                 if d < 2
             ]
-            n_contacts[ilp2] = len(ccontacts)
-            contacts_in_line.append(ccontacts)
 
             # compute distance from furthest electrode
-            distance_from_tip.append(
+            this_distance_from_tip = np.array(
                 [dist_real(x[1], furthest_electrode) for x in ccontacts])
 
-            # if spacing is too large, or too inconsistent, set n_contacts to 0
             if len(ccontacts) > 2:
-                interelectrode_spacing = np.diff(
-                    [0] + np.sort(distance_from_tip[-1]))
-                if np.ptp(interelectrode_spacing) > 5:  # variation in spacing
-                    n_contacts[ilp2] = 0
+                # remove electrodes contributing to large discrepancies in interelectrode spacing
+                # sort by distance to furthest_electrode
+                isort_distance = np.argsort(this_distance_from_tip)
+                # invsort_distance = get_inv(isort_distance)
 
-                if np.max(distance_from_tip[-1]) > 175:  # max length
-                    n_contacts[ilp2] = 0
+                # recompute interelectrode spacing
+                interelectrode_spacing = np.diff(
+                    np.concatenate(
+                        ([0], this_distance_from_tip[isort_distance])))
+                z_inter = np.abs(interelectrode_spacing - np.mean(
+                    interelectrode_spacing)) / np.std(interelectrode_spacing)
+
+                to_keep = z_inter < 2
+
+                this_distance_from_tip = np.array([
+                    this_distance_from_tip[i] for i in range(len(ccontacts))
+                    if i in isort_distance[to_keep]
+                ])
+                ccontacts = [
+                    ccontacts[i] for i in range(len(ccontacts))
+                    if i in isort_distance[to_keep]
+                ]
+
+                # if spacing is too large, or too inconsistent, set n_contacts to 0
+                if (this_distance_from_tip.size
+                        > 0) and (np.max(this_distance_from_tip)
+                                  > 175):  # max length
+                    ccontacts = []
+                    this_distance_from_tip = []
 
                 if np.sum((interelectrode_spacing > 12)
                           | (interelectrode_spacing < 2)
                           ) > 1:  # spacing abs value
-                    n_contacts[ilp2] = 0
+                    ccontacts = []
+                    this_distance_from_tip = []
+
+            distance_from_tip.append(this_distance_from_tip)
+            contacts_in_line.append(ccontacts)
+            n_contacts[ilp2] = len(ccontacts)
 
         # find the electrode with maximum number of contacts
         # if multiple, choose furthest point away from the scalp
@@ -407,8 +431,8 @@ def get_electrode_clusters(
 
         # add to electrode groups
         electrode_groups.append(current_electrodes)
-        electrode_groups_dist.append([0] +
-                                     distance_from_tip[end_electrode_idx])
+        electrode_groups_dist.append(
+            np.concatenate(([0], distance_from_tip[end_electrode_idx])))
 
     # save electrode locations
     loctable = pd.DataFrame(np.vstack([
@@ -608,6 +632,25 @@ def plot_on_template(loctable_mni, args):
                                      font_size=30,
                                      point_size=1,
                                      render=False)
+
+
+def get_inv(argsort):
+    ''' 
+    Get an array of indices that reverses an argsort. 
+
+    Example:
+    >>> A = [3, 1, 2]
+    >>> argsort = np.argsort(A)
+    >>> iargsort = get_inv(argsort)
+    >>> A[argsort][iargsort]
+    array([3, 1, 2])
+
+    :param argsort: array of indices that sorts an array
+    :return: array of indices that reverses the sort
+    '''
+    argsort_inv = np.arange(len(argsort))
+    argsort_inv[argsort] = argsort_inv.copy()
+    return argsort_inv
 
 
 if __name__ == '__main__':

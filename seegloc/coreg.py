@@ -51,8 +51,10 @@ def pipeline_full():
     if not os.path.exists(args.coreg_output):
         os.makedirs(args.coreg_output)
 
-    coreg_fsl(args.subject_mri, args.subject_ct, args.coreg_output,
-              args.run_step, args)
+    coreg_fsl(subject_mri=args.subject_mri,
+              subject_ct=args.subject_ct,
+              coreg_output=args.coreg_output,
+              args=args)
 
     # write json file with source filenames
     with open(os.path.join(args.coreg_output, 'coregister_meta.json'),
