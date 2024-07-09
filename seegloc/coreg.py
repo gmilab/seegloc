@@ -28,6 +28,10 @@ def pipeline_full():
                         '-s',
                         help='Hide info messages.',
                         action='store_true')
+    parser.add_argument('--ctmri_searchr',
+                        type=int,
+                        default=None,
+                        help='CT to MRI flirt search rx, ry, rz')
     parser.add_argument('--run-step',
                         type=int,
                         default=None,
@@ -48,7 +52,7 @@ def pipeline_full():
         os.makedirs(args.coreg_output)
 
     coreg_fsl(args.subject_mri, args.subject_ct, args.coreg_output,
-              args.run_step)
+              args.run_step, args)
 
     # write json file with source filenames
     with open(os.path.join(args.coreg_output, 'coregister_meta.json'),
@@ -69,13 +73,23 @@ def pipeline_full():
 def coreg_fsl(subject_mri: str,
               subject_ct: str,
               coreg_output: str,
-              run_step: Optional[int] = None):
+              args: Optional[argparse.Namespace] = None):
     from fsl.wrappers import flirt, fnirt, bet, applywarp, invxfm, concatxfm, applyxfm
 
+    # defaults
+    run_step = None
+    ct_searchr = 30
+
+    if args is not None:
+        run_step = args.run_step
+        ct_searchr = args.ctmri_searchr or ct_searchr
+
+    # path helper
     def crd(x: str) -> str:
         '''Return path to coregistration output file'''
         return os.path.join(coreg_output, x)
 
+    ######################################################
     # CT to MRI affine
     if run_step == 1 or (run_step == None):
         logging.info('[1/10] flirt: CT → MRI')
@@ -84,12 +98,12 @@ def coreg_fsl(subject_mri: str,
             ref=subject_mri,
             out=crd('vol_CT_inMRIspace.nii.gz'),
             omat=crd('transform_CTtoMRI_affine.mat'),
-            bins=64,
+            bins=128,
             cost='mutualinfo',
             dof=6,
-            searchrx=[-45, 45],
-            searchry=[-45, 45],
-            searchrz=[-45, 45],
+            searchrx=[-ct_searchr, ct_searchr],
+            searchry=[-ct_searchr, ct_searchr],
+            searchrz=[-ct_searchr, ct_searchr],
         )
 
     # BET the subject MRI for template registration
