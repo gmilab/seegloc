@@ -310,24 +310,25 @@ def get_electrode_clusters(
         if r['end1_scalp'] > r['end2_scalp'] else r['end2'],
         axis=1)
 
-    # convert centroid and end to mm
-    trajectories['centroid'] = trajectories['centroid'].apply(
-        lambda x: nibabel.affines.apply_affine(ct_nifti.affine, x))
-    trajectories['end'] = trajectories['end'].apply(
-        lambda x: nibabel.affines.apply_affine(ct_nifti.affine, x))
+    if len(trajectories) > 0:
+        # convert centroid and end to mm
+        trajectories['centroid'] = trajectories['centroid'].apply(
+            lambda x: nibabel.affines.apply_affine(ct_nifti.affine, x))
+        trajectories['end'] = trajectories['end'].apply(
+            lambda x: nibabel.affines.apply_affine(ct_nifti.affine, x))
 
-    # split tuple into 3 columns
-    trajectories[['centroid_x', 'centroid_y',
-                  'centroid_z']] = trajectories['centroid'].apply(pd.Series)
-    trajectories[['end_x', 'end_y',
-                  'end_z']] = trajectories['end'].apply(pd.Series)
+        # split tuple into 3 columns
+        trajectories[['centroid_x', 'centroid_y',
+                    'centroid_z']] = trajectories['centroid'].apply(pd.Series)
+        trajectories[['end_x', 'end_y',
+                    'end_z']] = trajectories['end'].apply(pd.Series)
 
-    trajectories = trajectories[[
-        'end_x', 'end_y', 'end_z', 'centroid_x', 'centroid_y', 'centroid_z',
-        'length_mm'
-    ]].copy()
-    trajectories.to_csv(args.coreg_folder + '/trajectories_CT.csv',
-                        index=False)
+        trajectories = trajectories[[
+            'end_x', 'end_y', 'end_z', 'centroid_x', 'centroid_y', 'centroid_z',
+            'length_mm'
+        ]].copy()
+        trajectories.to_csv(args.coreg_folder + '/trajectories_CT.csv',
+                            index=False)
 
     # cluster contacts by electrode
     electrodes_remaining = ct_elecs.loc[ct_elecs['in_brain']
