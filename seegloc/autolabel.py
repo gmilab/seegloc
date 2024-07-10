@@ -167,13 +167,36 @@ def get_electrode_clusters(
         args: argparse.Namespace) -> Tuple[pd.DataFrame, pd.DataFrame]:
     ct_data = ct_nifti.get_fdata()
 
+    # voxel size
+    dim_scales = ct_nifti.header.get_zooms()
+    vx_size = np.mean(np.abs(dim_scales))
+    upsample_factor = None
+
+    if np.ptp(dim_scales) / np.mean(np.abs(dim_scales)) > 0.05:
+        logging.warning('CT image has anisotropic voxels. Upsampling...')
+
+        # upsample to isometric preserving the highest resolution dimension
+        vx_size = np.min(dim_scales)
+        upsample_factor = dim_scales / vx_size
+
+        ct_data = skimage.transform.rescale(ct_data,
+                                            upsample_factor,
+                                            order=1,
+                                            preserve_range=True)
+
+        dim_scales = (vx_size, vx_size, vx_size)
+
+        ct_nifti.affine[:3, :3] = ct_nifti.affine[:3, :3] / upsample_factor[
+            None, :]
+        ct_nifti.affine[:3, 3] = ct_nifti.affine[:3, 3] * upsample_factor
+
     # get electrode locations
     logging.info('Detecting electrodes...')
     ct_label = skimage.measure.label(ct_data > args.threshold)
     ct_props = skimage.measure.regionprops(ct_label)
 
     # filter list of putative electrodes by size
-    voxel_volume = np.abs(np.prod(np.diag(ct_nifti.affine)[:3]))
+    voxel_volume = np.abs(np.prod(np.diag(dim_scales)))
 
     # create datatable of properties
     ct_elecs = pd.DataFrame([(p.centroid, p.area) for p in ct_props],
@@ -192,10 +215,16 @@ def get_electrode_clusters(
         os.path.join(args.coreg_folder, 'vol_brainmask_inCT.nii.gz'))
     brainmask_data = brainmask_nifti.get_fdata()
 
+    if upsample_factor is not None:
+        brainmask_data = skimage.transform.rescale(brainmask_data,
+                                                   upsample_factor,
+                                                   order=0,
+                                                   preserve_range=True)
+
     # dilate
     logging.info('Dilating mesh...')
     dilate_vx = (args.dilation /
-                 np.array(ct_nifti.header.get_zooms()[:3])).astype(int)
+                 np.array(dim_scales)).astype(int)
     brainmask_data_dilated = skimage.morphology.binary_dilation(
         brainmask_data,
         footprint=[(np.ones((dilate_vx[0], 1, 1)), 1),
@@ -242,6 +271,8 @@ def get_electrode_clusters(
     # remove skull base from scalp_points
     base_coords = fsl_img2imgcoord(np.array([0, 0, -35]), args.coreg_folder,
                                    'MNItoCT')
+
+    # account for upscaling
     scalp_points = scalp_points[:, scalp_points[2] > base_coords[2]]
 
     # define helper functions using available geometry
@@ -281,12 +312,6 @@ def get_electrode_clusters(
                 scalp_points,
                 axis=0))
 
-    # voxel size
-    dim_scales = np.diag(ct_nifti.affine)[:3]
-    if np.ptp(np.abs(dim_scales)) / np.mean(np.abs(dim_scales)) > 0.05:
-        logging.warning('CT image has anisotropic voxels.')
-    mean_vx_size = np.mean(np.abs(dim_scales))
-
     # filter out blobs that are outside the brain
     ct_elecs['in_brain'] = ct_elecs.apply(lambda r: brainmask_data_dilated[
         tuple(np.array(r['centroid']).astype(int))] > 0,
@@ -298,9 +323,9 @@ def get_electrode_clusters(
     ### filter list of putative trajectories without individually resolvable electrodes
     logging.info('Detecting unresolvable trajectories...')
     trajectories_list = list(
-        filter(lambda x: is_traj(x, mean_vx_size, args), ct_props))
+        filter(lambda x: is_traj(x, vx_size, args), ct_props))
     trajectories = pd.DataFrame(
-        [(p.centroid, p.axis_major_length * mean_vx_size) +
+        [(p.centroid, p.axis_major_length * vx_size) +
          get_orientation_and_endpoints(p) for p in trajectories_list],
         columns=['centroid', 'length_mm', 'end1', 'end2'])
     trajectories['end1_scalp'] = trajectories['end1'].apply(dist_to_scalp)
