@@ -9,6 +9,7 @@ import re
 
 import numpy as np
 import nibabel
+import nibabel.processing
 import skimage, skimage.measure
 import pyvista as pv
 import matplotlib.pyplot as plt
@@ -31,7 +32,7 @@ def main():
     parser.add_argument('--threshold',
                         help='CT value threshold for electrode detection',
                         type=float,
-                        default=2500)
+                        default=2000)
     parser.add_argument(
         '--electrode_vol_thresh',
         help=
@@ -165,12 +166,11 @@ def is_traj(prop, mean_vx_size, args):
 def get_electrode_clusters(
         ct_nifti: nibabel.Nifti1Image,
         args: argparse.Namespace) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    ct_data = ct_nifti.get_fdata()
-
     # voxel size
     dim_scales = ct_nifti.header.get_zooms()
     vx_size = np.mean(np.abs(dim_scales))
     upsample_factor = None
+    new_shape = None
 
     if np.ptp(dim_scales) / np.mean(np.abs(dim_scales)) > 0.05:
         logging.warning('CT image has anisotropic voxels. Upsampling...')
@@ -178,17 +178,13 @@ def get_electrode_clusters(
         # upsample to isometric preserving the highest resolution dimension
         vx_size = np.min(dim_scales)
         upsample_factor = dim_scales / vx_size
+        new_shape = np.round(ct_nifti.shape * upsample_factor).astype(int)
 
-        ct_data = skimage.transform.rescale(ct_data,
-                                            upsample_factor,
-                                            order=1,
-                                            preserve_range=True)
+        ct_nifti = nibabel.processing.conform(ct_nifti,
+                                              new_shape,
+                                              voxel_size=[vx_size] * 3)
 
-        dim_scales = (vx_size, vx_size, vx_size)
-
-        ct_nifti.affine[:3, :3] = ct_nifti.affine[:3, :3] / upsample_factor[
-            None, :]
-        ct_nifti.affine[:3, 3] = ct_nifti.affine[:3, 3] * upsample_factor
+    ct_data = ct_nifti.get_fdata()
 
     # get electrode locations
     logging.info('Detecting electrodes...')
@@ -196,7 +192,7 @@ def get_electrode_clusters(
     ct_props = skimage.measure.regionprops(ct_label)
 
     # filter list of putative electrodes by size
-    voxel_volume = np.abs(np.prod(np.diag(dim_scales)))
+    voxel_volume = vx_size**3
 
     # create datatable of properties
     ct_elecs = pd.DataFrame([(p.centroid, p.area) for p in ct_props],
@@ -216,15 +212,13 @@ def get_electrode_clusters(
     brainmask_data = brainmask_nifti.get_fdata()
 
     if upsample_factor is not None:
-        brainmask_data = skimage.transform.rescale(brainmask_data,
-                                                   upsample_factor,
-                                                   order=0,
-                                                   preserve_range=True)
-
+        brainmask_data = nibabel.processing.conform(brainmask_nifti,
+                                                    new_shape,
+                                                    voxel_size=[vx_size] *
+                                                    3).get_fdata()
     # dilate
     logging.info('Dilating mesh...')
-    dilate_vx = (args.dilation /
-                 np.array(dim_scales)).astype(int)
+    dilate_vx = (args.dilation / np.array(dim_scales)).astype(int)
     brainmask_data_dilated = skimage.morphology.binary_dilation(
         brainmask_data,
         footprint=[(np.ones((dilate_vx[0], 1, 1)), 1),
@@ -459,90 +453,105 @@ def get_electrode_clusters(
         electrode_groups_dist.append(
             np.concatenate(([0], distance_from_tip[end_electrode_idx])))
 
-    # save electrode locations
-    loctable = pd.DataFrame(np.vstack([
-        np.vstack([(igroup, ) + p for p in cgroup])
-        for igroup, cgroup in enumerate(electrode_groups)
-    ]),
-                            columns=['enumber', 'x', 'y', 'z'])
-    loctable['distance'] = np.concatenate(electrode_groups_dist)
-    loctable.sort_values(['enumber', 'distance'],
-                         ascending=[True, False],
-                         inplace=True)
-    loctable.reset_index(drop=True, inplace=True)
+    loctable_cols = ['ename', 'x', 'y', 'z']
 
-    # number by ename
-    loctable['number'] = loctable.groupby('enumber').cumcount() + 1
-    loctable['ename'] = loctable.apply(lambda r: chr(65 + r['enumber'].astype(
-        int)) + '-{:02.0f}'.format(r['number']),
-                                       axis=1)
+    if len(electrode_groups) > 0:
+        # save electrode locations
+        loctable = pd.DataFrame(np.vstack([
+            np.vstack([(igroup, ) + p for p in cgroup])
+            for igroup, cgroup in enumerate(electrode_groups)
+        ]),
+                                columns=['enumber', 'x', 'y', 'z'])
+        loctable['distance'] = np.concatenate(electrode_groups_dist)
+        loctable.sort_values(['enumber', 'distance'],
+                             ascending=[True, False],
+                             inplace=True)
+        loctable.reset_index(drop=True, inplace=True)
 
-    # convert to mm
-    loctable[['x', 'y', 'z']] = loctable.apply(lambda r: pd.Series(
-        nibabel.affines.apply_affine(ct_nifti.affine, r[['x', 'y', 'z']].values
-                                     )),
-                                               axis=1)
-    loctable[['ename', 'x', 'y',
-              'z']].to_csv(os.path.join(args.coreg_folder,
-                                        'electrodes_CT.csv'),
-                           index=False)
+        # number by ename
+        loctable['number'] = loctable.groupby('enumber').cumcount() + 1
+        loctable['ename'] = loctable.apply(lambda r: chr(65 + r[
+            'enumber'].astype(int)) + '-{:02.0f}'.format(r['number']),
+                                           axis=1)
+
+        # convert to mm
+        loctable[['x', 'y', 'z']] = loctable.apply(lambda r: pd.Series(
+            nibabel.affines.apply_affine(ct_nifti.affine, r[['x', 'y', 'z']].
+                                         values)),
+                                                   axis=1)
+    else:
+        # create empty dataframe
+        loctable = pd.DataFrame(columns=loctable_cols)
+        logging.warning('No electrodes detected.')
+
+    loctable[loctable_cols].to_csv(os.path.join(args.coreg_folder,
+                                                'electrodes_CT.csv'),
+                                   index=False)
 
     # warp coordinates into MNI space and plot on template brain
-    logging.info('Warping coordinates to MNI space...')
-    loctable_mni = warpcoords_ct_to_MNI(loctable[['x', 'y', 'z']].to_numpy(),
-                                        args.coreg_folder)
-    loctable_mni = pd.DataFrame(loctable_mni, columns=['x', 'y', 'z'])
-    loctable_mni['ename'] = loctable['ename']
-    loctable_mni['enumber'] = loctable['enumber']
+    loctable_mni_cols = ['ename', 'x', 'y', 'z', 'aal', 'entry']
 
-    # lookup AAL regions
-    logging.info('Looking up AAL regions...')
-    loctable_mni['aal'] = ''
-    for i, row in loctable_mni.iterrows():
-        loctable_mni.loc[i, 'aal'] = lookup_aal_region(row[['x', 'y',
-                                                            'z']].tolist(),
-                                                       fuzzy_dist=10)[1]
+    if len(loctable) > 0:
+        logging.info('Warping coordinates to MNI space...')
+        loctable_mni = warpcoords_ct_to_MNI(
+            loctable[['x', 'y', 'z']].to_numpy(), args.coreg_folder)
+        loctable_mni = pd.DataFrame(loctable_mni, columns=['x', 'y', 'z'])
+        loctable_mni['ename'] = loctable['ename']
+        loctable_mni['enumber'] = loctable['enumber']
 
-    # identify closest scalp electrode
-    # - electrode locations from MNE scalp montage
-    loctable_mni['entry'] = ''
-    pos_1020 = pd.read_csv(
-        os.path.join(
-            os.path.split(__file__)[0], 'atlases', '1020_positions.csv'))
-    pos_1020[['x', 'y',
-              'z']] = pos_1020[['x', 'y', 'z']] * 1000  # convert to mm
-    for eg in loctable_mni['enumber'].unique():
-        # get closest and furthest electrode
-        closest_electrode = loctable_mni[loctable_mni['enumber'] ==
-                                         eg].iloc[0][['x', 'y', 'z']].tolist()
-        furthest_electrode = loctable_mni[
-            loctable_mni['enumber'] == eg].iloc[-1][['x', 'y', 'z']].tolist()
+        # lookup AAL regions
+        logging.info('Looking up AAL regions...')
+        loctable_mni['aal'] = ''
+        for i, row in loctable_mni.iterrows():
+            loctable_mni.loc[i, 'aal'] = lookup_aal_region(row[['x', 'y',
+                                                                'z']].tolist(),
+                                                           fuzzy_dist=10)[1]
 
-        # get closest scalp electrode
-        dists_closest = [
-            dist_real(closest_electrode, p.tolist())
-            for ip, p in pos_1020[['x', 'y', 'z']].iterrows()
-        ]
-        dists_furthest = [
-            dist_real(furthest_electrode, p.tolist())
-            for ip, p in pos_1020[['x', 'y', 'z']].iterrows()
-        ]
+        # identify closest scalp electrode
+        # - electrode locations from MNE scalp montage
+        loctable_mni['entry'] = ''
+        pos_1020 = pd.read_csv(
+            os.path.join(
+                os.path.split(__file__)[0], 'atlases', '1020_positions.csv'))
+        pos_1020[['x', 'y',
+                  'z']] = pos_1020[['x', 'y', 'z']] * 1000  # convert to mm
+        for eg in loctable_mni['enumber'].unique():
+            # get closest and furthest electrode
+            closest_electrode = loctable_mni[loctable_mni['enumber'] ==
+                                             eg].iloc[0][['x', 'y',
+                                                          'z']].tolist()
+            furthest_electrode = loctable_mni[loctable_mni['enumber'] ==
+                                              eg].iloc[-1][['x', 'y',
+                                                            'z']].tolist()
 
-        if np.amin(dists_closest) < np.amin(dists_furthest):
-            closest_scalp_electrode = pos_1020.iloc[np.argmin(
-                dists_closest)]['label']
-        else:
-            closest_scalp_electrode = pos_1020.iloc[np.argmin(
-                dists_furthest)]['label']
+            # get closest scalp electrode
+            dists_closest = [
+                dist_real(closest_electrode, p.tolist())
+                for ip, p in pos_1020[['x', 'y', 'z']].iterrows()
+            ]
+            dists_furthest = [
+                dist_real(furthest_electrode, p.tolist())
+                for ip, p in pos_1020[['x', 'y', 'z']].iterrows()
+            ]
 
-        # write to table
-        loctable_mni.loc[loctable_mni['enumber'] == eg,
-                         'entry'] = closest_scalp_electrode
+            if np.amin(dists_closest) < np.amin(dists_furthest):
+                closest_scalp_electrode = pos_1020.iloc[np.argmin(
+                    dists_closest)]['label']
+            else:
+                closest_scalp_electrode = pos_1020.iloc[np.argmin(
+                    dists_furthest)]['label']
 
-    loctable_mni[['ename', 'x', 'y', 'z', 'aal',
-                  'entry']].to_csv(os.path.join(args.coreg_folder,
-                                                'electrodes_MNI.csv'),
-                                   index=False)
+            # write to table
+            loctable_mni.loc[loctable_mni['enumber'] == eg,
+                             'entry'] = closest_scalp_electrode
+
+    else:
+        # create empty dataframe
+        loctable_mni = pd.DataFrame(columns=loctable_mni_cols)
+
+    loctable_mni[loctable_mni_cols].to_csv(os.path.join(
+        args.coreg_folder, 'electrodes_MNI.csv'),
+                                           index=False)
 
     return loctable, loctable_mni, trajectories
 
@@ -568,9 +577,9 @@ def plot_on_vol(ct_nifti, loctable, args, trajectories=None):
         plotter.add_volume(
             ct_data,
             name='ct_data',
-            opacity=[0.0, 0.2, 0.07],
+            opacity=[0.0, 0.2, 0.05],
             cmap='bone',
-            clim=[1000, args.threshold],
+            clim=[1000, 3000],
             user_matrix=user_matrix,
         )
 
@@ -659,23 +668,6 @@ def plot_on_template(loctable_mni, args):
                                      render=False)
 
 
-def get_inv(argsort):
-    ''' 
-    Get an array of indices that reverses an argsort. 
-
-    Example:
-    >>> A = [3, 1, 2]
-    >>> argsort = np.argsort(A)
-    >>> iargsort = get_inv(argsort)
-    >>> A[argsort][iargsort]
-    array([3, 1, 2])
-
-    :param argsort: array of indices that sorts an array
-    :return: array of indices that reverses the sort
-    '''
-    argsort_inv = np.arange(len(argsort))
-    argsort_inv[argsort] = argsort_inv.copy()
-    return argsort_inv
 
 
 if __name__ == '__main__':
