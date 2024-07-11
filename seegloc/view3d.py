@@ -67,9 +67,9 @@ def view3d(ct_nifti: nibabel.spatialimages.SpatialImage, loctable: pd.DataFrame,
     plotter.add_volume(
         ct_data,
         name='ct_data',
-        opacity=[0.0, 0.1, 0.1],
+        opacity=[0.0, 0.2, 0.1],
         cmap='bone',
-        clim=[1000, 2500],
+        clim=[1000, 3000],
         user_matrix=user_matrix,
     )
 
