@@ -48,7 +48,7 @@ def get_mni_mm(coords_vx: List[Tuple[float, float, float]], reference_vol: str):
     return coords_mm
 
 def lookup_aal_region(
-    coords_mm: Tuple[float, float, float],
+    coords_mm: Sequence[Tuple[float, float, float]] | Tuple[float, float, float],
     fuzzy_dist: Optional[int] = None,
     atlas_data: Union[
         str, np.
@@ -56,7 +56,7 @@ def lookup_aal_region(
     atlas_labels: Union[
         str, pd.
         DataFrame] = os.path.join(os.path.split(__file__)[0], 'atlases', 'AAL3v1_1mm.nii.txt'),
-) -> Tuple[int, str, bool]:
+) -> Tuple[int, str, bool] | Tuple[List[int], List[str], List[bool]]:
     '''
     Lookup AAL region for a given coordinate, using the AAL3 atlas. If fuzzy is True, then the nearest region within 5mm is returned.
     '''
@@ -86,69 +86,90 @@ def lookup_aal_region(
 
     elif not isinstance(atlas_labels, np.ndarray):
         raise ValueError('atlas_labels must be a string or pandas dataframe')
+
+    # normalize coords_mm to sequence of coords
+    if (len(coords_mm) == 3) and not (isinstance(coords_mm[0], Sequence)):
+        coords_mm = [coords_mm]
+        input_was_sequence = False
+    else:
+        input_was_sequence = True
     
     # convert coords from mm to voxels using affine
     coords_mm = np.array(coords_mm)
     coords_vx = nib.affines.apply_affine(np.linalg.inv(atlas.affine),
                                             coords_mm)
 
-    # get voxel value
-    used_fuzzy = False
-    coords_vx = np.round(coords_vx).astype(int)
-    try:
-        voxel_value = atlas_data[coords_vx[0], coords_vx[1], coords_vx[2]]
-    except:
-        voxel_value = 0
+    # lookup
+    data = {
+        'voxel_value': [],
+        'region_name': [],
+        'used_fuzzy': []
+    }
+    for i in range(coords_vx.shape[0]):
+        # get voxel value
+        used_fuzzy = False
+        coords_vx = np.round(coords_vx).astype(int)
+        try:
+            voxel_value = atlas_data[coords_vx[0], coords_vx[1], coords_vx[2]]
+        except:
+            voxel_value = 0
 
-    # if fuzzy, and voxel_value = 0, do nearest neighbor
-    if (fuzzy_dist is not None) and (voxel_value == 0):
-        # initialize distances
-        fuzzy_diameter = fuzzy_dist * 2 + 1
+        # if fuzzy, and voxel_value = 0, do nearest neighbor
+        if (fuzzy_dist is not None) and (voxel_value == 0):
+            # initialize distances
+            fuzzy_diameter = fuzzy_dist * 2 + 1
 
-        distances_mat = np.zeros((fuzzy_diameter, fuzzy_diameter, fuzzy_diameter))
-        for x in range(fuzzy_diameter):
-            for y in range(fuzzy_diameter):
-                for z in range(fuzzy_diameter):
-                    distances_mat[x, y, z] = np.linalg.norm(
-                        np.array([fuzzy_dist, fuzzy_dist, fuzzy_dist]) - np.array([x, y, z]))
+            distances_mat = np.zeros((fuzzy_diameter, fuzzy_diameter, fuzzy_diameter))
+            for x in range(fuzzy_diameter):
+                for y in range(fuzzy_diameter):
+                    for z in range(fuzzy_diameter):
+                        distances_mat[x, y, z] = np.linalg.norm(
+                            np.array([fuzzy_dist, fuzzy_dist, fuzzy_dist]) - np.array([x, y, z]))
 
-        # check if the distances box will exceed image boundaries (super edgy case)
-        trim = np.zeros((3, 2), dtype=int)
-        for i in range(3):
-            if coords_vx[i] - fuzzy_dist < 0:
-                trim[i, 0] = fuzzy_dist - coords_vx[i]
-            if coords_vx[i] + fuzzy_dist + 1 > atlas_data.shape[i]:
-                trim[i, 1] = coords_vx[i] + fuzzy_dist + 1 - atlas_data.shape[i]
+            # check if the distances box will exceed image boundaries (super edgy case)
+            trim = np.zeros((3, 2), dtype=int)
+            for i in range(3):
+                if coords_vx[i] - fuzzy_dist < 0:
+                    trim[i, 0] = fuzzy_dist - coords_vx[i]
+                if coords_vx[i] + fuzzy_dist + 1 > atlas_data.shape[i]:
+                    trim[i, 1] = coords_vx[i] + fuzzy_dist + 1 - atlas_data.shape[i]
 
-        # get nearest voxel that is not zero, but less than 5 voxels away
-        selected_atlasdata = atlas_data[(coords_vx[0] - fuzzy_dist +
-                                        trim[0, 0]):(coords_vx[0] + fuzzy_dist + 1 -
-                                        trim[0, 1]), (coords_vx[1] - fuzzy_dist +
-                                        trim[1, 0]):(coords_vx[1] + fuzzy_dist + 1 -
-                                        trim[1, 1]), (coords_vx[2] - fuzzy_dist +
-                                        trim[2, 0]):(coords_vx[2] + fuzzy_dist + 1 -
-                                        trim[2, 1])]
-        trimmed_distances = distances_mat[trim[0, 0]:(-1 * trim[0, 1]) if trim[0,1] != 0 else None,
-                                          trim[1, 0]:(-1 * trim[1, 1]) if trim[1,1] != 0 else None,
-                                          trim[2, 0]:(-1 * trim[2, 1]) if trim[2,1] != 0 else None]
-        
-        distances = np.ma.masked_where(
-            (selected_atlasdata == 0) | (trimmed_distances > fuzzy_dist),
-            trimmed_distances)
-        nearest_voxel = np.unravel_index(np.argmin(distances), distances.shape)
-        voxel_value = selected_atlasdata[nearest_voxel]
+            # get nearest voxel that is not zero, but less than 5 voxels away
+            selected_atlasdata = atlas_data[(coords_vx[0] - fuzzy_dist +
+                                            trim[0, 0]):(coords_vx[0] + fuzzy_dist + 1 -
+                                            trim[0, 1]), (coords_vx[1] - fuzzy_dist +
+                                            trim[1, 0]):(coords_vx[1] + fuzzy_dist + 1 -
+                                            trim[1, 1]), (coords_vx[2] - fuzzy_dist +
+                                            trim[2, 0]):(coords_vx[2] + fuzzy_dist + 1 -
+                                            trim[2, 1])]
+            trimmed_distances = distances_mat[trim[0, 0]:(-1 * trim[0, 1]) if trim[0,1] != 0 else None,
+                                            trim[1, 0]:(-1 * trim[1, 1]) if trim[1,1] != 0 else None,
+                                            trim[2, 0]:(-1 * trim[2, 1]) if trim[2,1] != 0 else None]
+            
+            distances = np.ma.masked_where(
+                (selected_atlasdata == 0) | (trimmed_distances > fuzzy_dist),
+                trimmed_distances)
+            nearest_voxel = np.unravel_index(np.argmin(distances), distances.shape)
+            voxel_value = selected_atlasdata[nearest_voxel]
 
-        used_fuzzy = True
+            used_fuzzy = True
 
-    # get label
-    if voxel_value > 0:
-        region_name = atlas_labels[voxel_value]
+        # get label
+        if voxel_value > 0:
+            region_name = atlas_labels[voxel_value]
+        else:
+            region_name = ''
+            voxel_value = None
+            used_fuzzy = None
+
+        data['voxel_value'].append(voxel_value)
+        data['region_name'].append(region_name)
+        data['used_fuzzy'].append(used_fuzzy)
+
+    if input_was_sequence:
+        return data['voxel_value'], data['region_name'], data['used_fuzzy']
     else:
-        region_name = ''
-        voxel_value = None
-        used_fuzzy = None
-
-    return voxel_value, region_name, used_fuzzy
+        return data['voxel_value'][0], data['region_name'][0], data['used_fuzzy'][0]
 
 # main
 if __name__ == '__main__':
