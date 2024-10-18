@@ -11,6 +11,132 @@ import numpy as np
 from io import StringIO
 
 
+class atlas_lookup():
+
+    def __init__(
+        self,
+        atlas_data: Union[str, nib.nifti1.Nifti1Image],
+        atlas_labels: Union[str, pd.DataFrame],
+    ):
+        # load atlas
+        if isinstance(atlas_data, str):
+            atlas = nib.load(atlas_data)
+            atlas_data = atlas.get_fdata().astype(int)
+        elif isinstance(atlas_data, nib.nifti1.Nifti1Image):
+            atlas = atlas_data
+            atlas_data = atlas.get_fdata().astype(int)
+        else:
+            raise ValueError(
+                'atlas_data must be a string or nibabel.nifti1.Nifti1Image')
+
+        # load atlas labels
+        if isinstance(atlas_labels, str):
+            atlas_labels = pd.read_csv(atlas_labels, sep=' ', header=None)
+            atlas_labels.set_index(0, inplace=True)
+            atlas_labels.rename(columns={1: 'label'}, inplace=True)
+            atlas_labels = atlas_labels['label']
+
+        elif not isinstance(atlas_labels, pd.DataFrame):
+            raise ValueError(
+                'atlas_labels must be a string or pandas dataframe')
+
+        self.atlas = atlas
+        self.atlas_data = atlas_data
+        self.atlas_labels = atlas_labels
+
+    def lookup(
+        self,
+        coords_mm: Tuple[float, float, float],
+        fuzzy_dist: Optional[int] = None,
+    ) -> Tuple[int, str, bool]:
+        # check inputs
+        if not isinstance(coords_mm, Sequence):
+            raise ValueError('coords_mm must be a tuple or list')
+        elif len(coords_mm) != 3:
+            raise ValueError('coords_mm must be a tuple or list of length 3')
+        elif not all([isinstance(x, (int, float)) for x in coords_mm]):
+            raise ValueError('coords_mm must be a tuple or list of numbers')
+        elif any([np.isnan(x) for x in coords_mm]):
+            raise ValueError('coords_mm cannot contain NaNs')
+
+        # convert coords from mm to voxels using affine
+        coords_mm = np.array(coords_mm)
+        coords_vx = nib.affines.apply_affine(np.linalg.inv(self.atlas.affine),
+                                             coords_mm)
+
+        # get voxel value
+        used_fuzzy = False
+        coords_vx = np.round(coords_vx).astype(int)
+        try:
+            voxel_value = self.atlas_data[coords_vx[0], coords_vx[1],
+                                          coords_vx[2]]
+        except:
+            voxel_value = 0
+
+        # if fuzzy, and voxel_value = 0, do nearest neighbor
+        if (fuzzy_dist is not None) and (voxel_value == 0):
+            # initialize distances
+            fuzzy_diameter = fuzzy_dist * 2 + 1
+
+            distances_mat = np.zeros(
+                (fuzzy_diameter, fuzzy_diameter, fuzzy_diameter))
+            for x in range(fuzzy_diameter):
+                for y in range(fuzzy_diameter):
+                    for z in range(fuzzy_diameter):
+                        distances_mat[x, y, z] = np.linalg.norm(
+                            np.array([fuzzy_dist, fuzzy_dist, fuzzy_dist]) -
+                            np.array([x, y, z]))
+
+            # check if the distances box will exceed image boundaries (super edgy case)
+            trim = np.zeros((3, 2), dtype=int)
+            for i in range(3):
+                if coords_vx[i] - fuzzy_dist < 0:
+                    trim[i, 0] = fuzzy_dist - coords_vx[i]
+                if coords_vx[i] + fuzzy_dist + 1 > self.atlas_data.shape[i]:
+                    trim[i, 1] = coords_vx[
+                        i] + fuzzy_dist + 1 - self.atlas_data.shape[i]
+
+            assert np.all(
+                trim >= 0), 'Trim (' + str(trim) + ') should be non-negative'
+
+            # get nearest voxel that is not zero, but less than specified voxels away
+            selected_atlasdata = self.atlas_data[(coords_vx[0] - fuzzy_dist +
+                                                  trim[0, 0]):(coords_vx[0] +
+                                                               fuzzy_dist + 1 -
+                                                               trim[0, 1]),
+                                                 (coords_vx[1] - fuzzy_dist +
+                                                  trim[1, 0]):(coords_vx[1] +
+                                                               fuzzy_dist + 1 -
+                                                               trim[1, 1]),
+                                                 (coords_vx[2] - fuzzy_dist +
+                                                  trim[2, 0]):(coords_vx[2] +
+                                                               fuzzy_dist + 1 -
+                                                               trim[2, 1])]
+            trimmed_distances = distances_mat[
+                trim[0, 0]:(-1 * trim[0, 1]) if trim[0, 1] != 0 else None,
+                trim[1, 0]:(-1 * trim[1, 1]) if trim[1, 1] != 0 else None,
+                trim[2, 0]:(-1 * trim[2, 1]) if trim[2, 1] != 0 else None]
+
+            distances = np.ma.masked_where(
+                (selected_atlasdata == 0) | (trimmed_distances > fuzzy_dist),
+                trimmed_distances)
+            nearest_voxel = np.unravel_index(np.argmin(distances),
+                                             distances.shape)
+            voxel_value = selected_atlasdata[nearest_voxel]
+
+            used_fuzzy = True
+
+        # get label
+        if voxel_value > 0:
+            region_name = self.atlas_labels[voxel_value]
+        else:
+            region_name = ''
+            voxel_value = None
+            used_fuzzy = None
+
+        return voxel_value, region_name, used_fuzzy
+
+
 def split_ename(x: str):
     ''' Split channel name into SEEG lead and number based on the typical SickKids electrodes naming convention. '''
     ename = re.match(r'^([A-Z0-9]+[A-Z])[\-_]?([0-9]{1,2})$', x.upper())
@@ -32,14 +158,16 @@ def same_electrode(x: Tuple[str, str]):
 
     return ename1 == ename2
 
-def get_mni_mm(coords_vx: List[Tuple[float, float, float]], reference_vol: str):
+
+def get_mni_mm(coords_vx: List[Tuple[float, float, float]],
+               reference_vol: str):
     ''' Convert voxel coordinates to MNI coordinates in mm. '''
     ref = nib.load(reference_vol)
     affine = ref.affine
 
     if isinstance(coords_vx[0], float):
         coords_vx = [coords_vx]
-    
+
     coords_mm = []
     for coord in coords_vx:
         coords_vx = np.array(coord)
@@ -47,140 +175,48 @@ def get_mni_mm(coords_vx: List[Tuple[float, float, float]], reference_vol: str):
 
     return coords_mm
 
+
 def lookup_aal_region(
-    coords_mm: Sequence[Tuple[float, float, float]] | Tuple[float, float, float],
+    coords_mm: Tuple[float, float, float],
     fuzzy_dist: Optional[int] = None,
-    atlas_data: Union[
-        str, np.
-        ndarray] = os.path.join(os.path.split(__file__)[0], 'atlases', 'AAL3v1_1mm.nii.gz'),
-    atlas_labels: Union[
-        str, pd.
-        DataFrame] = os.path.join(os.path.split(__file__)[0], 'atlases', 'AAL3v1_1mm.nii.txt'),
-) -> Tuple[int, str, bool] | Tuple[List[int], List[str], List[bool]]:
+    atlas_data: Union[None, str, nib.nifti1.Nifti1Image] = None,
+    atlas_labels: Union[None, str, pd.DataFrame] = None,
+) -> Tuple[int, str, bool]:
     '''
     Lookup AAL region for a given coordinate, using the AAL3 atlas. If fuzzy is True, then the nearest region within 5mm is returned.
     '''
-    # check inputs
-    if not isinstance(coords_mm, Sequence):
-        raise ValueError('coords_mm must be a tuple or list')
-    elif len(coords_mm) != 3:
-        raise ValueError('coords_mm must be a tuple or list of length 3')
-    elif not all([isinstance(x, (int, float)) for x in coords_mm]):
-        raise ValueError('coords_mm must be a tuple or list of numbers')
-    elif any([np.isnan(x) for x in coords_mm]):
-        raise ValueError('coords_mm cannot contain NaNs')
 
-    # load atlas
-    if isinstance(atlas_data, str):
-        atlas = nib.load(atlas_data)
-        atlas_data = atlas.get_fdata().astype(int)
-    elif not isinstance(atlas_data, np.ndarray):
-        raise ValueError('atlas_data must be a string or numpy array')
+    labeller = atlas_lookup(atlas_data, atlas_labels)
+    return labeller.lookup(coords_mm, fuzzy_dist)
 
-    # load atlas labels
-    if isinstance(atlas_labels, str):
-        atlas_labels = pd.read_csv(atlas_labels, sep=' ', header=None)
-        atlas_labels.set_index(0, inplace=True)
-        atlas_labels.rename(columns={1: 'label'}, inplace=True)
-        atlas_labels = atlas_labels['label']
-
-    elif not isinstance(atlas_labels, np.ndarray):
-        raise ValueError('atlas_labels must be a string or pandas dataframe')
-
-    # normalize coords_mm to sequence of coords
-    if (len(coords_mm) == 3) and not (isinstance(coords_mm[0], Sequence)):
-        coords_mm = [coords_mm]
-        input_was_sequence = False
-    else:
-        input_was_sequence = True
-    
-    # convert coords from mm to voxels using affine
-    coords_mm = np.array(coords_mm)
-    coords_vx = nib.affines.apply_affine(np.linalg.inv(atlas.affine),
-                                            coords_mm)
-
-    # lookup
-    data = {
-        'voxel_value': [],
-        'region_name': [],
-        'used_fuzzy': []
-    }
-    for i in range(coords_vx.shape[0]):
-        # get voxel value
-        used_fuzzy = False
-        coords_vx = np.round(coords_vx).astype(int)
-        try:
-            voxel_value = atlas_data[coords_vx[0], coords_vx[1], coords_vx[2]]
-        except:
-            voxel_value = 0
-
-        # if fuzzy, and voxel_value = 0, do nearest neighbor
-        if (fuzzy_dist is not None) and (voxel_value == 0):
-            # initialize distances
-            fuzzy_diameter = fuzzy_dist * 2 + 1
-
-            distances_mat = np.zeros((fuzzy_diameter, fuzzy_diameter, fuzzy_diameter))
-            for x in range(fuzzy_diameter):
-                for y in range(fuzzy_diameter):
-                    for z in range(fuzzy_diameter):
-                        distances_mat[x, y, z] = np.linalg.norm(
-                            np.array([fuzzy_dist, fuzzy_dist, fuzzy_dist]) - np.array([x, y, z]))
-
-            # check if the distances box will exceed image boundaries (super edgy case)
-            trim = np.zeros((3, 2), dtype=int)
-            for i in range(3):
-                if coords_vx[i] - fuzzy_dist < 0:
-                    trim[i, 0] = fuzzy_dist - coords_vx[i]
-                if coords_vx[i] + fuzzy_dist + 1 > atlas_data.shape[i]:
-                    trim[i, 1] = coords_vx[i] + fuzzy_dist + 1 - atlas_data.shape[i]
-
-            # get nearest voxel that is not zero, but less than 5 voxels away
-            selected_atlasdata = atlas_data[(coords_vx[0] - fuzzy_dist +
-                                            trim[0, 0]):(coords_vx[0] + fuzzy_dist + 1 -
-                                            trim[0, 1]), (coords_vx[1] - fuzzy_dist +
-                                            trim[1, 0]):(coords_vx[1] + fuzzy_dist + 1 -
-                                            trim[1, 1]), (coords_vx[2] - fuzzy_dist +
-                                            trim[2, 0]):(coords_vx[2] + fuzzy_dist + 1 -
-                                            trim[2, 1])]
-            trimmed_distances = distances_mat[trim[0, 0]:(-1 * trim[0, 1]) if trim[0,1] != 0 else None,
-                                            trim[1, 0]:(-1 * trim[1, 1]) if trim[1,1] != 0 else None,
-                                            trim[2, 0]:(-1 * trim[2, 1]) if trim[2,1] != 0 else None]
-            
-            distances = np.ma.masked_where(
-                (selected_atlasdata == 0) | (trimmed_distances > fuzzy_dist),
-                trimmed_distances)
-            nearest_voxel = np.unravel_index(np.argmin(distances), distances.shape)
-            voxel_value = selected_atlasdata[nearest_voxel]
-
-            used_fuzzy = True
-
-        # get label
-        if voxel_value > 0:
-            region_name = atlas_labels[voxel_value]
-        else:
-            region_name = ''
-            voxel_value = None
-            used_fuzzy = None
-
-        data['voxel_value'].append(voxel_value)
-        data['region_name'].append(region_name)
-        data['used_fuzzy'].append(used_fuzzy)
-
-    if input_was_sequence:
-        return data['voxel_value'], data['region_name'], data['used_fuzzy']
-    else:
-        return data['voxel_value'][0], data['region_name'][0], data['used_fuzzy'][0]
 
 # main
 if __name__ == '__main__':
     # argparse
     parser = argparse.ArgumentParser(
-        description='Lookup the AAL3 region for a list of coordinates, matching within a radius if requested.',
+        description=
+        'Lookup the AAL3 region for a list of coordinates, matching within a radius if requested.',
     )
-    parser.add_argument('coords_file', type=str, nargs='?', help='CSV or XLSX file containing coordinates, one per line, in mm.')
-    parser.add_argument('--fuzzy_dist', type=int, default=None, help='If set, will match coordinates within this distance of a region.')
-    parser.add_argument('--stdout', action='store_true', help='If set, will print output to stdout instead of writing to file.')
-    parser.add_argument('--vx_ref_vol', type=str, default=None, help='Interpret coordinates as voxels within this reference volume')
+    parser.add_argument(
+        'coords_file',
+        type=str,
+        nargs='?',
+        help='CSV or XLSX file containing coordinates, one per line, in mm.')
+    parser.add_argument(
+        '--fuzzy_dist',
+        type=int,
+        default=None,
+        help='If set, will match coordinates within this distance of a region.'
+    )
+    parser.add_argument(
+        '--stdout',
+        action='store_true',
+        help='If set, will print output to stdout instead of writing to file.')
+    parser.add_argument(
+        '--vx_ref_vol',
+        type=str,
+        default=None,
+        help='Interpret coordinates as voxels within this reference volume')
 
     args = parser.parse_args()
 
@@ -192,7 +228,9 @@ if __name__ == '__main__':
         coords = pd.read_excel(args.coords_file, header=None)
     else:
         coord_type = 'MNI coordinates (mm)' if not args.vx_ref_vol else 'voxel coordinates relative to the reference volume'
-        print(f'Paste your tab-separated {coord_type}, one per line. Press Ctrl+D when done:')
+        print(
+            f'Paste your tab-separated {coord_type}, one per line. Press Ctrl+D when done:'
+        )
         input_str = sys.stdin.read()
         csv_buffer = StringIO(input_str)
 
@@ -201,28 +239,38 @@ if __name__ == '__main__':
 
     # convert to mm if requested
     if args.vx_ref_vol:
-        coords = pd.concat((pd.DataFrame(get_mni_mm(coords.to_numpy().tolist(), args.vx_ref_vol), index=None, columns=['x_mm', 'y_mm', 'z_mm']), coords), axis=1)
+        coords = pd.concat((pd.DataFrame(
+            get_mni_mm(coords.to_numpy().tolist(), args.vx_ref_vol),
+            index=None,
+            columns=['x_mm', 'y_mm', 'z_mm']), coords),
+                           axis=1)
 
     # lookup
     if stdout:
         vx_hdr = 'x (vx)\ty (vx)\tz (vx)\t' if args.vx_ref_vol else ''
 
         print('\n\n\n')
-        print('-'*75)
-        print(f'{vx_hdr}x (mm)\ty (mm)\tz (mm)\taal\taal_name                 used_fuzzy')
-        print('-'*75)
+        print('-' * 75)
+        print(
+            f'{vx_hdr}x (mm)\ty (mm)\tz (mm)\taal\taal_name                 used_fuzzy'
+        )
+        print('-' * 75)
 
     for tp in coords.itertuples():
-        voxel_value, region_name, used_fuzzy = lookup_aal_region(coords_mm=tp[1:4], fuzzy_dist=args.fuzzy_dist)
+        voxel_value, region_name, used_fuzzy = lookup_aal_region(
+            coords_mm=tp[1:4], fuzzy_dist=args.fuzzy_dist)
 
         if stdout:
             vx_vals = f'{tp[4]}\t{tp[5]}\t{tp[6]}\t' if args.vx_ref_vol else ''
 
-            print(f'''{vx_vals}{tp[1]:.1f}\t{tp[2]:.1f}\t{tp[3]:.1f}\t{voxel_value if voxel_value is not None else "-"}\t{region_name:<25}{used_fuzzy if used_fuzzy is not None else ""}''')
+            print(
+                f'''{vx_vals}{tp[1]:.1f}\t{tp[2]:.1f}\t{tp[3]:.1f}\t{voxel_value if voxel_value is not None else "-"}\t{region_name:<25}{used_fuzzy if used_fuzzy is not None else ""}'''
+            )
         else:
             coords.loc[tp[0], 'voxel_value'] = voxel_value
             coords.loc[tp[0], 'region_name'] = region_name
             coords.loc[tp[0], 'used_fuzzy'] = used_fuzzy
 
     if not stdout:
-        coords.to_csv(args.coords_file.replace('.csv', '_aal3.csv'), index=False)
+        coords.to_csv(args.coords_file.replace('.csv', '_aal3.csv'),
+                      index=False)
