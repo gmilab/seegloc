@@ -192,6 +192,93 @@ def lookup_fsl(coords_mm: Tuple[float, float, float], atlas_name: str) -> str:
     return out
 
 
+def lookup_aal_volume(
+    volume_data: Union[str, nib.nifti1.Nifti1Image],
+    fuzzy_dist: Optional[int] = None,
+    atlas_data: Union[str, nib.nifti1.Nifti1Image] = os.path.join(
+        os.path.split(__file__)[0], 'atlases', 'AAL3v1_1mm.nii.gz'),
+    atlas_labels: Union[str, pd.DataFrame] = os.path.join(
+        os.path.split(__file__)[0], 'atlases', 'AAL3v1_1mm.nii.txt'),
+) -> pd.DataFrame:
+    import scipy.ndimage as ndimage
+
+    # load atlas
+    if isinstance(atlas_data, str):
+        atlas = nib.load(atlas_data)
+        atlas_data = atlas.get_fdata().astype(int)
+    elif isinstance(atlas_data, nib.nifti1.Nifti1Image):
+        atlas = atlas_data
+        atlas_data = atlas.get_fdata().astype(int)
+    else:
+        raise ValueError('atlas_data must be a string or Nifti1Image')
+
+    # load atlas labels
+    if isinstance(atlas_labels, str):
+        atlas_labels = pd.read_csv(atlas_labels, sep=' ', header=None)
+        atlas_labels.set_index(0, inplace=True)
+        atlas_labels.rename(columns={1: 'label'}, inplace=True)
+        atlas_labels = atlas_labels['label']
+
+    elif not isinstance(atlas_labels, pd.DataFrame):
+        raise ValueError('atlas_labels must be a string or pandas dataframe')
+
+    # check that volume_data and atlas_data have the same shape
+    if isinstance(volume_data, str):
+        volume = nib.load(volume_data)
+        volume_data = volume.get_fdata().astype(int)
+
+    elif isinstance(volume_data, nib.nifti1.Nifti1Image):
+        volume = volume_data
+        volume_data = volume.get_fdata().astype(int)
+
+    else:
+        raise ValueError('volume_data must be a string or Nifti1Image')
+
+    # Check if affines are the same
+    if not np.allclose(atlas.affine, volume.affine):
+        # Choose which image to resample (in this example, resampling img2 to img1's space)
+        volume_data = ndimage.affine_transform(
+            volume_data,
+            np.linalg.inv(atlas.affine) @ volume.affine,
+            output_shape=atlas.shape,
+        )
+
+    # get unique values from volume_data
+    unique_values = np.unique(volume_data)
+
+    volume_atlas_labels = []
+    for val in unique_values:
+        bin_mask = volume_data == val
+
+        # find intersection of volume_data and atlas_data
+        if fuzzy_dist is not None:
+            # dilate the volume
+            bin_mask = ndimage.binary_dilation(bin_mask,
+                                               structure=np.ones(
+                                                   (fuzzy_dist, fuzzy_dist,
+                                                    fuzzy_dist)))
+
+        intersection = np.logical_and(bin_mask, atlas_data > 0)
+
+        # get unique values from intersection
+        atlas_values = np.unique(atlas_data[intersection])
+
+        # get counts of each unique value
+        counts = np.bincount(atlas_data[intersection].flatten())
+
+        volume_atlas_labels.append(
+            pd.DataFrame({
+                'input_value': [val] * len(atlas_values),
+                'atlas_idx': atlas_values,
+                'atlas_label': atlas_labels[atlas_values].values,
+                'n_intersect_vx': counts[atlas_values]
+            }))
+
+    volume_atlas_labels = pd.concat(volume_atlas_labels, axis=0)
+
+    return volume_atlas_labels
+
+
 # main
 if __name__ == '__main__':
     # argparse
