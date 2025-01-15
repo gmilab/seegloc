@@ -10,13 +10,18 @@ import numpy as np
 
 from io import StringIO
 
+DEFAULT_ATLAS_DATA = os.path.join(
+    os.path.split(__file__)[0], 'atlases', 'AAL3v1_1mm.nii.gz')
+DEFAULT_ATLAS_LABELS = os.path.join(
+    os.path.split(__file__)[0], 'atlases', 'AAL3v1_1mm.nii.txt')
+
 
 class atlas_lookup():
 
     def __init__(
         self,
-        atlas_data: Union[str, nib.nifti1.Nifti1Image],
-        atlas_labels: Union[str, pd.DataFrame],
+        atlas_data: Union[str, nib.nifti1.Nifti1Image] = DEFAULT_ATLAS_DATA,
+        atlas_labels: Union[str, pd.DataFrame] = DEFAULT_ATLAS_LABELS,
     ):
         # load atlas
         if isinstance(atlas_data, str):
@@ -179,8 +184,8 @@ def get_mni_mm(coords_vx: List[Tuple[float, float, float]],
 def lookup_aal_region(
     coords_mm: Tuple[float, float, float],
     fuzzy_dist: Optional[int] = None,
-    atlas_data: Union[None, str, nib.nifti1.Nifti1Image] = None,
-    atlas_labels: Union[None, str, pd.DataFrame] = None,
+    atlas_data: Union[None, str, nib.nifti1.Nifti1Image] = DEFAULT_ATLAS_DATA,
+    atlas_labels: Union[None, str, pd.DataFrame] = DEFAULT_ATLAS_LABELS,
 ) -> Tuple[int, str, bool]:
     '''
     Lookup AAL region for a given coordinate, using the AAL3 atlas. If fuzzy is True, then the nearest region within 5mm is returned.
