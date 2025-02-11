@@ -36,6 +36,12 @@ def pipeline_full():
                         type=int,
                         default=None,
                         help='Run only the specified step')
+    parser.add_argument(
+        '--inmask_mri',
+        help='Path to brain mask in MRI space',
+        type=str,
+        default=None,
+    )
 
     args = parser.parse_args()
 
@@ -72,6 +78,45 @@ def pipeline_full():
     )
 
 
+def pipeline_qconly():
+    parser = argparse.ArgumentParser(
+        description=
+        'Coregister subject CT to subject MRI to template MRI with FSL, then generate quality-control images.',
+    )
+    parser.add_argument('coreg_output',
+                        help='Path to coregistration output directory',
+                        type=str)
+    parser.add_argument('--silent',
+                        '-s',
+                        help='Hide info messages.',
+                        action='store_true')
+    args = parser.parse_args()
+
+    if not args.silent:
+        logging.basicConfig(level=logging.INFO)
+
+    # set logging name
+    logging.getLogger().name = 'seegloc.qconly'
+
+    t1 = datetime.datetime.now()
+
+    # make output directory
+    if not os.path.exists(args.coreg_output):
+        raise ValueError('Coregistration output directory does not exist')
+
+    # get subject MRI from coregistration output
+    with open(os.path.join(args.coreg_output, 'coregister_meta.json'),
+              'r') as f:
+        meta = json.load(f)
+        subject_mri = meta['src_mri']
+
+    generate_qc(subject_mri, args.coreg_output)
+
+    logging.info(
+        f'QC images generated in {(datetime.datetime.now() - t1).total_seconds()} s'
+    )
+
+
 def coreg_fsl(subject_mri: str,
               subject_ct: str,
               coreg_output: str,
@@ -95,7 +140,7 @@ def coreg_fsl(subject_mri: str,
     # CT to MRI affine
     if run_step == 1 or (run_step == None):
         logging.info('[1/10] flirt: CT → MRI')
-        flirt(
+        flirt_params = dict(
             src=subject_ct,
             ref=subject_mri,
             out=crd('vol_CT_inMRIspace.nii.gz'),
@@ -108,6 +153,11 @@ def coreg_fsl(subject_mri: str,
             searchrz=[-ct_searchr, ct_searchr],
         )
 
+        if args.inmask_mri is not None:
+            flirt_params['refweight'] = args.inmask_mri
+
+        flirt(**flirt_params)
+
     # BET the subject MRI for template registration
     if run_step == 2 or (run_step == None):
         logging.info('[2/10] bet: subject MRI')
@@ -119,23 +169,33 @@ def coreg_fsl(subject_mri: str,
     # MRI to template affine
     if run_step == 3 or (run_step == None):
         logging.info('[3/10] flirt: MRI → template')
-        flirt(
+        flirt_params = dict(
             src=crd('vol_MRI_betted.nii.gz'),
             ref=f'{FSLDIR}/data/standard/MNI152_T1_1mm_brain.nii.gz',
             out=crd('vol_MRI_inTemplatespace_affineonly.nii.gz'),
             omat=crd('transform_MRItoTemplate_affine.mat'),
         )
 
+        if args.inmask_mri is not None:
+            flirt_params['inweight'] = args.inmask_mri
+
+        flirt(**flirt_params)
+
     # MRI to template nonlinear
     if run_step == 4 or (run_step == None):
         logging.info('[4/10] fnirt: MRI → template nonlinear')
-        fnirt(
+        fnirt_params = dict(
             src=subject_mri,
             ref=f'{FSLDIR}/data/standard/MNI152_T1_1mm.nii.gz',
             iout=crd('vol_MRI_inTemplatespace.nii.gz'),
             fout=crd('transform_MRItoTemplate_fnirt.nii.gz'),
             aff=crd('transform_MRItoTemplate_affine.mat'),
         )
+
+        if args.inmask_mri is not None:
+            fnirt_params['inmask'] = args.inmask_mri
+
+        fnirt(**fnirt_params)
 
     # applywarp from CT to template
     if run_step == 5 or (run_step == None):
